@@ -111,14 +111,16 @@ Desktop.ini
 *.log
 logs/
 
-# Data and models (large files). Adjust if you track these.
-/data/
+# Models
 /models/
 *.h5
 *.pt
 *.pth
 *.joblib
 *.pkl
+
+# Data
+/data/
 
 # Secrets and env
 .env
