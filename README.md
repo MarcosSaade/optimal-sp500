@@ -76,13 +76,26 @@ python src/train.py --stage all --evaluate
 
 ```bash
 # Train only return model
-python src/train.py --stage returns
+python train.py --stage returns
 
 # Train only volatility model
-python src/train.py --stage volatility
+python train.py --stage volatility
 
 # Train only meta-labeling classifier
-python src/train.py --stage meta
+python train.py --stage meta
+```
+
+### Hyperparameter Tuning
+
+```bash
+# Tune all models with Optuna
+python tune.py --stage all
+
+# Tune specific components
+python tune.py --stage returns --n-trials 100
+python tune.py --stage volatility --n-trials 50
+
+# See TUNING_GUIDE.md for advanced options
 ```
 
 ---
@@ -93,13 +106,17 @@ python src/train.py --stage meta
 build/
 ├── README.md                 # This file
 ├── requirements.txt          # Python dependencies
+├── train.py                 # Training orchestration
+├── tune.py                  # Hyperparameter optimization
+├── evaluate.py              # Model evaluation
 ├── data/                     # Data directory
 │   ├── train.csv            # Raw training data (user provided)
 │   └── processed/           # Processed CV folds (auto-generated)
 ├── models/                   # Trained models (auto-generated)
 │   ├── returns/             # Return prediction models
 │   ├── volatility/          # Volatility prediction models
-│   └── meta/                # Meta-labeling classifiers
+│   ├── meta/                # Meta-labeling classifiers
+│   └── tuning_results/      # Hyperparameter tuning results
 ├── notebooks/               # Exploratory analysis
 │   └── eda.ipynb           # Exploratory data analysis
 └── src/                     # Source code
@@ -109,9 +126,7 @@ build/
     ├── returns.py          # Return prediction model
     ├── volatility.py       # Volatility prediction model
     ├── meta_labeling.py    # Meta-labeling framework
-    ├── allocation.py       # Position allocation
-    ├── train.py            # Training orchestration
-    └── evaluate.py         # Model evaluation
+    └── allocation.py       # Position allocation
 ```
 
 ---
@@ -354,8 +369,9 @@ The pipeline evaluates models using multiple metrics:
 
 ### Hyperparameter Tuning
 - Default parameters are optimized for this dataset
-- Modify `LGBM_PARAMS` in `config.py` for experimentation
-- Use `optuna` for systematic hyperparameter search (see training script)
+- Use `tune.py` for systematic hyperparameter search with Optuna
+- See `TUNING_GUIDE.md` for detailed tuning instructions
+- Modify `LGBM_PARAMS` in `config.py` for manual experimentation
 
 ### Cross-Validation
 - 5 folds balance computation time and robustness

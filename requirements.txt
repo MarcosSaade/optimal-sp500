@@ -17,6 +17,9 @@ statsmodels>=0.14.0
 # Progress Bars
 tqdm>=4.65.0
 
+# Hyperparameter Tuning
+optuna>=3.4.0
+
 # Jupyter (optional, for EDA)
 jupyter>=1.0.0
 ipykernel>=6.25.0
