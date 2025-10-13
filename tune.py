@@ -380,7 +380,7 @@ def tune_volatility_models(n_trials: int = 50, timeout: int = None, folds: list 
             model.fit(train_df, y_train, mu_train, val_df, y_val, mu_val)
 
             # Evaluate on validation set
-            sigma_val = model.predict(val_df, mu_val)
+            sigma_val = model.predict(val_df)
 
             # Compute QLIKE (lower is better)
             residuals = y_val - mu_val
