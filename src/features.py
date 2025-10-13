@@ -10,6 +10,8 @@ import pandas as pd
 from typing import List, Dict
 from sklearn.decomposition import PCA
 import warnings
+import pickle
+from pathlib import Path
 
 from .config import *
 
@@ -141,6 +143,20 @@ class FeatureEngineer:
         """Fit and transform in one step."""
         self.fit(df)
         return self.transform(df)
+
+    def save(self, path):
+        """Save the fitted feature engineer to disk."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+
+    @staticmethod
+    def load(path):
+        """Load a fitted feature engineer from disk."""
+        with open(path, "rb") as f:
+            return pickle.load(f)
 
     # ============================================================================
     # Phase 1: Temporal Features
