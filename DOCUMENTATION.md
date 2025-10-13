@@ -39,7 +39,6 @@ Strategy Returns
 - Purges training samples whose labels overlap with validation period
 - 1% embargo period to prevent serial correlation
 
-**Based on**: "Advances in Financial Machine Learning" Chapter 7
 
 **Why Critical**: Standard CV can inflate validation scores due to leakage in time series data
 

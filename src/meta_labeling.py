@@ -3,7 +3,6 @@ Meta-Labeling
 
 Confidence-based position sizing using a meta-classifier.
 
-From "Advances in Financial Machine Learning" Chapter 3:
 - Primary model predicts returns (direction and magnitude)
 - Meta-classifier predicts if primary model is correct
 - Scale positions by meta-probability
@@ -15,6 +14,8 @@ import lightgbm as lgb
 from pathlib import Path
 from typing import Dict
 import pickle
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import brier_score_loss, roc_auc_score
 
 from .config import *
 
@@ -36,6 +37,8 @@ class MetaLabelPipeline:
         params: Dict = None,
         num_boost_round: int = LGBM_META_ROUNDS,
         early_stopping_rounds: int = LGBM_META_EARLY_STOP,
+        use_calibration: bool = False,
+        calibration_method: str = "isotonic",
     ):
         """
         Initialize meta-labeling pipeline.
@@ -52,14 +55,21 @@ class MetaLabelPipeline:
             Maximum boosting rounds
         early_stopping_rounds : int
             Early stopping patience
+        use_calibration : bool
+            Whether to calibrate probabilities
+        calibration_method : str
+            Calibration method ("sigmoid" or "isotonic")
         """
         self.meta_label_method = meta_label_method
         self.min_confidence = min_confidence
         self.params = params if params is not None else LGBM_META_PARAMS.copy()
         self.num_boost_round = num_boost_round
         self.early_stopping_rounds = early_stopping_rounds
+        self.use_calibration = use_calibration
+        self.calibration_method = calibration_method
 
         self.model = None
+        self.calibrator = None
         self.feature_names = None
         self.is_fitted = False
 
@@ -187,6 +197,28 @@ class MetaLabelPipeline:
             ],
         )
 
+        # Calibrate probabilities if requested
+        if self.use_calibration and val_features is not None:
+            from sklearn.isotonic import IsotonicRegression
+            from sklearn.linear_model import LogisticRegression
+
+            val_meta_labels = self._generate_meta_labels(val_predictions, val_actuals)
+            X_val_meta = self._prepare_meta_features(val_features, val_predictions)
+            X_val_meta = X_val_meta.fillna(0)
+
+            uncalibrated_probs = self.model.predict(X_val_meta)
+
+            if self.calibration_method == "isotonic":
+                self.calibrator = IsotonicRegression(out_of_bounds="clip")
+                self.calibrator.fit(uncalibrated_probs, val_meta_labels)
+            elif self.calibration_method == "sigmoid":
+                self.calibrator = LogisticRegression()
+                self.calibrator.fit(uncalibrated_probs.reshape(-1, 1), val_meta_labels)
+            else:
+                raise ValueError(
+                    f"Unknown calibration method: {self.calibration_method}"
+                )
+
         self.is_fitted = True
         return self
 
@@ -218,7 +250,19 @@ class MetaLabelPipeline:
         X_meta = X_meta.fillna(0)
 
         # Predict probabilities
-        meta_proba = self.model.predict(X_meta)
+        uncalibrated_probs = self.model.predict(X_meta)
+
+        if self.use_calibration and self.calibrator is not None:
+            if self.calibration_method == "isotonic":
+                meta_proba = self.calibrator.predict(uncalibrated_probs)
+            elif self.calibration_method == "sigmoid":
+                meta_proba = self.calibrator.predict_proba(
+                    uncalibrated_probs.reshape(-1, 1)
+                )[:, 1]
+            else:
+                meta_proba = uncalibrated_probs
+        else:
+            meta_proba = uncalibrated_probs
 
         return meta_proba
 

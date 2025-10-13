@@ -5,8 +5,6 @@ Implements:
 1. Purged K-Fold cross-validation (prevents label leakage)
 2. Data preprocessing (imputation, winsorization)
 3. Feature availability masks
-
-Based on "Advances in Financial Machine Learning" Chapter 7.
 """
 
 import numpy as np
