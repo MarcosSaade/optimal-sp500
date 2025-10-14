@@ -343,16 +343,6 @@ def train_meta_labeling(folds: list = None):
         # Save
         meta_model.save(MODELS_DIR / "meta" / f"fold_{fold}.pkl")
 
-        # Train calibrated version
-        print("\n5. Training calibrated meta-labeling...")
-        meta_model_calibrated = MetaLabelPipeline(
-            use_calibration=True, calibration_method="isotonic"
-        )
-        meta_model_calibrated.fit(X_train, mu_train, y_train, X_val, mu_val, y_val)
-
-        # Save calibrated version
-        meta_model_calibrated.save(MODELS_DIR / "meta" / f"fold_{fold}_calibrated.pkl")
-
         print(f"\n✅ Fold {fold} meta-labeling complete!")
 
 

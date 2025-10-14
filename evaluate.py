@@ -52,7 +52,6 @@ def compute_sharpe_ratio(
 def evaluate_fold(
     fold: int,
     use_meta_labeling: bool = True,
-    use_calibration: bool = False,
     verbose: bool = True,
 ) -> dict:
     """
@@ -64,8 +63,6 @@ def evaluate_fold(
         Fold number
     use_meta_labeling : bool
         Whether to use meta-labeling
-    use_calibration : bool
-        Whether to use calibrated meta probabilities
     verbose : bool
         Print detailed results
 
@@ -99,10 +96,8 @@ def evaluate_fold(
 
     # Load meta-labeling if requested
     meta_model = None
-    meta_model_calibrated = None
     if use_meta_labeling:
         meta_path = MODELS_DIR / "meta" / f"fold_{fold}.pkl"
-        meta_path_calibrated = MODELS_DIR / "meta" / f"fold_{fold}_calibrated.pkl"
 
         if meta_path.exists():
             meta_model = MetaLabelPipeline.load(meta_path)
@@ -110,15 +105,6 @@ def evaluate_fold(
             if verbose:
                 print("   ⚠ Meta-labeling model not found, skipping")
             use_meta_labeling = False
-
-        if use_calibration and meta_path_calibrated.exists():
-            meta_model_calibrated = MetaLabelPipeline.load(meta_path_calibrated)
-        elif use_calibration:
-            if verbose:
-                print(
-                    "   ⚠ Calibrated meta-labeling model not found, using uncalibrated"
-                )
-            use_calibration = False
 
     # Engineer features
     if verbose:
@@ -147,13 +133,8 @@ def evaluate_fold(
         if verbose:
             print("7. Applying meta-labeling...")
 
-        model_to_use = (
-            meta_model_calibrated
-            if use_calibration and meta_model_calibrated
-            else meta_model
-        )
-        meta_proba = model_to_use.predict_proba(X_val, mu)
-        allocations_meta = model_to_use.scale_positions(allocations, meta_proba)
+        meta_proba = meta_model.predict_proba(X_val, mu)
+        allocations_meta = meta_model.scale_positions(allocations, meta_proba)
     else:
         allocations_meta = allocations
         meta_proba = np.ones_like(allocations)
@@ -188,7 +169,6 @@ def evaluate_fold(
         "n_samples": len(allocations),
         "sharpe_base": float(sharpe_base),
         "sharpe_meta": float(sharpe_meta) if use_meta_labeling else None,
-        "calibrated": use_calibration,
         "improvement_pct": float((sharpe_meta / sharpe_base - 1) * 100)
         if use_meta_labeling and sharpe_base != 0
         else None,
@@ -217,9 +197,7 @@ def evaluate_fold(
     return results
 
 
-def evaluate_all_folds(
-    use_meta_labeling: bool = True, compare_calibration: bool = False
-):
+def evaluate_all_folds(use_meta_labeling: bool = True):
     """
     Evaluate all folds and print summary.
 
@@ -227,90 +205,21 @@ def evaluate_all_folds(
     ----------
     use_meta_labeling : bool
         Whether to use meta-labeling
-    compare_calibration : bool
-        Whether to compare calibrated vs uncalibrated meta models
     """
     print("\n" + "=" * 80)
     print("MODEL EVALUATION")
     print("=" * 80)
+    print(f"Meta-labeling: {'ENABLED' if use_meta_labeling else 'DISABLED'}")
 
-    if compare_calibration:
-        print("Mode: COMPARING CALIBRATED VS UNCALIBRATED META-LABELING")
+    all_results = []
 
-        all_results_uncalibrated = []
-        all_results_calibrated = []
-
-        for fold in range(1, CV_N_SPLITS + 1):
-            results_uncal = evaluate_fold(
-                fold, use_meta_labeling=True, use_calibration=False, verbose=False
-            )
-            results_cal = evaluate_fold(
-                fold, use_meta_labeling=True, use_calibration=True, verbose=False
-            )
-            all_results_uncalibrated.append(results_uncal)
-            all_results_calibrated.append(results_cal)
-
-        df_uncal = pd.DataFrame(all_results_uncalibrated)
-        df_cal = pd.DataFrame(all_results_calibrated)
-
-        print("\n" + "=" * 80)
-        print("COMPARISON: UNCALIBRATED vs CALIBRATED")
-        print("=" * 80)
-
-        print("\nUncalibrated Meta-Labeling:")
-        print(
-            f"  Mean Meta Sharpe:   {df_uncal['sharpe_meta'].mean():.3f} ± {df_uncal['sharpe_meta'].std():.3f}"
+    for fold in range(1, CV_N_SPLITS + 1):
+        results = evaluate_fold(
+            fold,
+            use_meta_labeling=use_meta_labeling,
+            verbose=True,
         )
-        print(f"  Mean Improvement:   {df_uncal['improvement_pct'].mean():+.1f}%")
-
-        print("\nCalibrated Meta-Labeling:")
-        print(
-            f"  Mean Meta Sharpe:   {df_cal['sharpe_meta'].mean():.3f} ± {df_cal['sharpe_meta'].std():.3f}"
-        )
-        print(f"  Mean Improvement:   {df_cal['improvement_pct'].mean():+.1f}%")
-
-        delta_sharpe = df_cal["sharpe_meta"].mean() - df_uncal["sharpe_meta"].mean()
-        delta_improvement = (
-            df_cal["improvement_pct"].mean() - df_uncal["improvement_pct"].mean()
-        )
-
-        print("\nCalibration Impact:")
-        print(f"  Δ Sharpe:           {delta_sharpe:+.3f}")
-        print(f"  Δ Improvement:      {delta_improvement:+.1f}%")
-
-        comparison_df = pd.DataFrame(
-            {
-                "fold": df_uncal["fold"],
-                "sharpe_base": df_uncal["sharpe_base"],
-                "sharpe_uncalibrated": df_uncal["sharpe_meta"],
-                "sharpe_calibrated": df_cal["sharpe_meta"],
-                "improvement_uncal_%": df_uncal["improvement_pct"],
-                "improvement_cal_%": df_cal["improvement_pct"],
-            }
-        )
-
-        print("\nPer-Fold Comparison:")
-        print(comparison_df.to_string(index=False))
-
-        results_path = PROJECT_ROOT / "evaluation_results_calibration_comparison.csv"
-        comparison_df.to_csv(results_path, index=False)
-        print(f"\n✅ Comparison saved to: {results_path}")
-
-        return all_results_uncalibrated, all_results_calibrated
-
-    else:
-        print(f"Meta-labeling: {'ENABLED' if use_meta_labeling else 'DISABLED'}")
-
-        all_results = []
-
-        for fold in range(1, CV_N_SPLITS + 1):
-            results = evaluate_fold(
-                fold,
-                use_meta_labeling=use_meta_labeling,
-                use_calibration=False,
-                verbose=True,
-            )
-            all_results.append(results)
+        all_results.append(results)
 
     # Summary
     print("\n" + "=" * 80)
@@ -378,24 +287,15 @@ def main():
     parser.add_argument(
         "--fold", type=int, default=None, help="Evaluate single fold only"
     )
-    parser.add_argument(
-        "--compare-calibration",
-        action="store_true",
-        help="Compare calibrated vs uncalibrated meta models",
-    )
 
     args = parser.parse_args()
 
     use_meta = not args.no_meta
 
-    if args.compare_calibration:
-        evaluate_all_folds(use_meta_labeling=True, compare_calibration=True)
-    elif args.fold is not None:
-        evaluate_fold(
-            args.fold, use_meta_labeling=use_meta, use_calibration=False, verbose=True
-        )
+    if args.fold is not None:
+        evaluate_fold(args.fold, use_meta_labeling=use_meta, verbose=True)
     else:
-        evaluate_all_folds(use_meta_labeling=use_meta, compare_calibration=False)
+        evaluate_all_folds(use_meta_labeling=use_meta)
 
 
 if __name__ == "__main__":

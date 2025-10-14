@@ -600,20 +600,6 @@ def tune_meta_labeling(n_trials: int = 50, timeout: int = None, folds: list = No
         # Save
         model_final.save(MODELS_DIR / "meta" / f"fold_{fold}.pkl")
 
-        # Retrain calibrated version with best parameters
-        print("\n6. Retraining calibrated version with best parameters...")
-        model_calibrated = MetaLabelPipeline(
-            params=best_lgbm_params,
-            num_boost_round=LGBM_META_ROUNDS,
-            early_stopping_rounds=LGBM_META_EARLY_STOP,
-            use_calibration=True,
-            calibration_method="isotonic",
-        )
-        model_calibrated.fit(X_train, mu_train, y_train, X_val, mu_val, y_val)
-
-        # Save calibrated version
-        model_calibrated.save(MODELS_DIR / "meta" / f"fold_{fold}_calibrated.pkl")
-
         # Save tuning results
         results = {
             "fold": fold,
