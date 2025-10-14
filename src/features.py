@@ -7,11 +7,14 @@ All operations are leak-safe (no future information used).
 
 import numpy as np
 import pandas as pd
-from typing import List, Dict
+from typing import List, Dict, Optional
 from sklearn.decomposition import PCA
+from sklearn.preprocessing import PolynomialFeatures
+import lightgbm as lgb
 import warnings
 import pickle
 from pathlib import Path
+from scipy.special import comb
 
 from .config import *
 
@@ -20,13 +23,14 @@ warnings.filterwarnings("ignore")
 
 class FeatureEngineer:
     """
-    Feature engineering with temporal dynamics, volatility features, and regime indicators.
+    Feature engineering with fractional differencing and polynomial interactions.
 
-    Features created:
-    1. Temporal: rolling statistics, lags, momentum
-    2. Volatility: historical vol, EWMA vol, vol-of-vol
-    3. Regimes: volatility-based regimes and interactions
-    4. PCA: dimensionality reduction per feature cluster
+    Pipeline:
+    1. Add temporal, volatility, and regime features
+    2. Add fractional differencing features
+    3. Select top-k features by LGBM importance
+    4. Add polynomial/interaction features on top-k
+    5. Select final top 150 features by LGBM importance
     """
 
     def __init__(
@@ -37,6 +41,10 @@ class FeatureEngineer:
         pca_variance_threshold: float = PCA_VARIANCE_THRESHOLD,
         correlation_threshold: float = CORRELATION_THRESHOLD,
         random_seed: int = RANDOM_SEED,
+        frac_diff_d: float = FRAC_DIFF_D,
+        frac_diff_threshold: float = FRAC_DIFF_THRESHOLD,
+        top_k_after_frac_diff: int = TOP_K_AFTER_FRAC_DIFF,
+        poly_degree: int = POLY_DEGREE,
     ):
         """
         Initialize feature engineer.
@@ -46,27 +54,49 @@ class FeatureEngineer:
         continuous_features : List[str]
             Base continuous feature names
         temporal_windows : List[int]
-            Rolling window sizes (e.g., [5, 21, 63] = 1 week, 1 month, 3 months)
+            Rolling window sizes
         extended_windows : List[int]
-            Extended window sizes for multi-scale analysis
+            Extended window sizes
         pca_variance_threshold : float
             Variance to retain in PCA
         correlation_threshold : float
             Threshold for correlation clustering
         random_seed : int
             Random seed for reproducibility
+        frac_diff_d : float
+            Fractional differencing order
+        frac_diff_threshold : float
+            Minimum weight threshold for fractional differencing
+        top_k_after_frac_diff : int
+            Number of top features to select after fractional differencing
+        poly_degree : int
+            Polynomial degree for interactions
         """
         self.continuous_features = continuous_features
+        # Safety: ensure target-like columns aren't used as inputs (prevent leakage)
+        forbidden = {TARGET_COL, "forward_returns"}
+        removed = [c for c in self.continuous_features if c in forbidden]
+        if removed:
+            print(f"⚠️  Removed forbidden features from continuous_features to avoid leakage: {removed}")
+        self.continuous_features = [c for c in self.continuous_features if c not in forbidden]
         self.temporal_windows = temporal_windows
         self.extended_windows = extended_windows
         self.pca_variance_threshold = pca_variance_threshold
         self.correlation_threshold = correlation_threshold
         self.random_seed = random_seed
+        self.frac_diff_d = frac_diff_d
+        self.frac_diff_threshold = frac_diff_threshold
+        self.top_k_after_frac_diff = top_k_after_frac_diff
+        self.poly_degree = poly_degree
 
         # Fitted components
         self.feature_clusters: Dict[int, List[str]] = {}
         self.pca_models: Dict[int, PCA] = {}
         self.vol_regime_thresholds = {}
+        self.frac_diff_weights = {}
+        self.top_k_features_after_fd = []
+        self.poly_feature_names = []
+        self.final_selected_features = []  # Final top 150 features
         self.is_fitted = False
 
         np.random.seed(random_seed)
@@ -93,6 +123,42 @@ class FeatureEngineer:
         # Fit PCA and clustering
         self._fit_cross_sectional(df)
 
+        # Calculate fractional differencing weights
+        self._fit_fractional_differencing()
+
+        # Phase 1: Create base features (temporal, volatility, regime, PCA)
+        print("⏱  Creating base features...")
+        df_base = self._add_base_features(df)
+
+        # Phase 2: Add fractional differencing features
+        print("📈 Adding fractional differencing features...")
+        df_with_fd = self._add_fractional_diff_features(df_base)
+
+        # Phase 3: Select top-k features using LGBM
+        print(f"🔍 Selecting top {self.top_k_after_frac_diff} features after fractional differencing...")
+        self.top_k_features_after_fd = self._select_top_k_features(
+            df_with_fd, self.top_k_after_frac_diff
+        )
+        print(f"   Selected {len(self.top_k_features_after_fd)} features")
+
+        # Phase 4: Determine polynomial feature names
+        print("🔗 Preparing polynomial/interaction features...")
+        self._fit_polynomial_features()
+
+        # Phase 5: Keep only top-k features before adding polynomials
+        df_top_k = self._keep_top_k_features(df_with_fd)
+        
+        # Phase 6: Create full feature set with polynomials on top-k
+        print("🏗  Creating full feature set with polynomials...")
+        df_with_poly = self._add_polynomial_features(df_top_k)
+
+        # Phase 7: Select final top 150 features
+        print(f"🎯 Selecting final top {MAX_FEATURES} features...")
+        self.final_selected_features = self._select_top_k_features(
+            df_with_poly, MAX_FEATURES
+        )
+        print(f"   Selected {len(self.final_selected_features)} final features")
+
         self.is_fitted = True
         print("✅ Feature engineer fitted")
         return self
@@ -114,27 +180,25 @@ class FeatureEngineer:
         if not self.is_fitted:
             raise ValueError("FeatureEngineer must be fitted before transform")
 
-        df_out = df.copy()
+        # Phase 1: Base features
+        print("⏱  Phase 1: Base features...")
+        df_out = self._add_base_features(df)
 
-        # Phase 1: Temporal dynamics
-        print("⏱  Phase 1: Temporal dynamics...")
-        df_out = self._add_temporal_features(df_out)
+        # Phase 2: Fractional differencing
+        print("� Phase 2: Fractional differencing...")
+        df_out = self._add_fractional_diff_features(df_out)
 
-        # Phase 2: Volatility features
-        print("📊 Phase 2: Volatility features...")
-        df_out = self._add_volatility_features(df_out)
+        # Phase 3: Keep only top-k features + special columns
+        print(f"🔍 Phase 3: Selecting top {self.top_k_after_frac_diff} features...")
+        df_out = self._keep_top_k_features(df_out)
 
-        # Phase 3: Regime features
-        print("🌤  Phase 3: Regime features...")
-        df_out = self._add_regime_features(df_out)
+        # Phase 4: Add polynomial/interaction features
+        print("🔗 Phase 4: Polynomial/interaction features...")
+        df_out = self._add_polynomial_features(df_out)
 
-        # Phase 4: PCA features
-        print("🔬 Phase 4: PCA features...")
-        df_out = self._add_pca_features(df_out)
-
-        # Phase 5: Interaction features
-        print("🔗 Phase 5: Interaction features...")
-        df_out = self._add_interaction_features(df_out)
+        # Phase 5: Select final top features
+        print(f"🎯 Phase 5: Selecting final top {MAX_FEATURES} features...")
+        df_out = self._keep_final_features(df_out)
 
         print(f"✅ Feature engineering complete: {df_out.shape[1]} features")
         return df_out
@@ -157,6 +221,28 @@ class FeatureEngineer:
         """Load a fitted feature engineer from disk."""
         with open(path, "rb") as f:
             return pickle.load(f)
+
+    # ============================================================================
+    # Base Features (Temporal + Volatility + Regime + PCA)
+    # ============================================================================
+
+    def _add_base_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add all base features (temporal, volatility, regime, PCA)."""
+        df_out = df.copy()
+        
+        # Add temporal features
+        df_out = self._add_temporal_features(df_out)
+        
+        # Add volatility features
+        df_out = self._add_volatility_features(df_out)
+        
+        # Add regime features
+        df_out = self._add_regime_features(df_out)
+        
+        # Add PCA features
+        df_out = self._add_pca_features(df_out)
+        
+        return df_out
 
     # ============================================================================
     # Phase 1: Temporal Features
@@ -388,7 +474,196 @@ class FeatureEngineer:
         return df_out
 
     # ============================================================================
-    # Phase 5: Interaction Features
+    # Fractional Differencing
+    # ============================================================================
+
+    def _fit_fractional_differencing(self):
+        """Calculate fractional differencing weights."""
+        # Calculate binomial weights for fractional differencing
+        k_max = 100  # Maximum lag to consider
+        weights = [1.0]
+        
+        for k in range(1, k_max + 1):
+            weight = -weights[-1] * (self.frac_diff_d - k + 1) / k
+            if abs(weight) < self.frac_diff_threshold:
+                break
+            weights.append(weight)
+        
+        self.frac_diff_weights = np.array(weights)
+        print(f"   Fractional diff weights: {len(self.frac_diff_weights)} terms (d={self.frac_diff_d})")
+
+    def _add_fractional_diff_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add fractional differencing features."""
+        df_out = df.copy()
+        
+        # Get all numeric columns except special columns
+        special_cols = ["date_id", "risk_free_rate", TARGET_COL, "forward_returns"]
+        numeric_cols = [
+            col for col in df.columns 
+            if col not in special_cols and pd.api.types.is_numeric_dtype(df[col])
+        ]
+        
+        # Apply fractional differencing to selected continuous features
+        for feature in self.continuous_features:
+            if feature not in df.columns or df[feature].isna().all():
+                continue
+            
+            series = df[feature].fillna(method='ffill').fillna(0).values
+            fd_series = self._fractional_diff_series(series)
+            df_out[f"{feature}_fd"] = fd_series
+        
+        return df_out
+
+    def _fractional_diff_series(self, series: np.ndarray) -> np.ndarray:
+        """Apply fractional differencing to a series."""
+        n = len(series)
+        result = np.zeros(n)
+        
+        for i in range(len(self.frac_diff_weights), n):
+            result[i] = np.dot(self.frac_diff_weights, series[i - len(self.frac_diff_weights) + 1:i + 1][::-1])
+        
+        # Set early values to NaN
+        result[:len(self.frac_diff_weights)] = np.nan
+        
+        return result
+
+    # ============================================================================
+    # Top-K Feature Selection
+    # ============================================================================
+
+    def _select_top_k_features(self, df: pd.DataFrame, top_k: int) -> List[str]:
+        """Select top-k features using LightGBM importance."""
+        # Prepare data
+        special_cols = ["date_id", "risk_free_rate", TARGET_COL, "forward_returns"]
+        feature_cols = [col for col in df.columns if col not in special_cols]
+        
+        # Remove high-NaN features
+        nan_ratio = df[feature_cols].isna().mean()
+        valid_features = nan_ratio[nan_ratio < 0.5].index.tolist()
+        
+        if len(valid_features) == 0:
+            return []
+        
+        X = df[valid_features].fillna(0)
+        y = df[TARGET_COL]
+        
+        # Remove NaN targets
+        valid_idx = ~y.isna()
+        X = X[valid_idx]
+        y = y[valid_idx]
+        
+        if len(y) == 0:
+            return []
+        
+        # Train a simple LightGBM model
+        print(f"   Training LGBM on {len(valid_features)} features...")
+        
+        import lightgbm as lgb
+        
+        train_data = lgb.Dataset(X, label=y)
+        params = {
+            'objective': 'regression',
+            'metric': 'rmse',
+            'num_leaves': 31,
+            'learning_rate': 0.05,
+            'feature_fraction': 0.8,
+            'bagging_fraction': 0.8,
+            'bagging_freq': 5,
+            'verbose': -1,
+            'seed': self.random_seed,
+        }
+        
+        model = lgb.train(
+            params,
+            train_data,
+            num_boost_round=100,
+            valid_sets=[train_data],
+            callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)]
+        )
+        
+        # Get feature importance
+        importance = model.feature_importance(importance_type='gain')
+        feature_importance = dict(zip(valid_features, importance))
+        
+        # Sort and select top-k
+        sorted_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
+        selected = [f for f, _ in sorted_features[:top_k]]
+        
+        print(f"   Top 10 features: {selected[:10]}")
+        
+        return selected
+
+    def _keep_top_k_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Keep only top-k features selected during fit."""
+        special_cols = ["date_id", "risk_free_rate", TARGET_COL, "forward_returns"]
+        cols_to_keep = special_cols + self.top_k_features_after_fd
+        
+        # Keep only columns that exist
+        cols_to_keep = [col for col in cols_to_keep if col in df.columns]
+        
+        return df[cols_to_keep]
+
+    def _keep_final_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Keep only final selected features."""
+        special_cols = ["date_id", "risk_free_rate", TARGET_COL, "forward_returns"]
+        cols_to_keep = special_cols + self.final_selected_features
+        
+        # Keep only columns that exist
+        cols_to_keep = [col for col in cols_to_keep if col in df.columns]
+        
+        return df[cols_to_keep]
+
+    # ============================================================================
+    # Polynomial/Interaction Features
+    # ============================================================================
+
+    def _fit_polynomial_features(self):
+        """Determine polynomial feature names based on top-k features."""
+        # Generate interaction pairs and squared terms
+        self.poly_feature_names = []
+        
+        # Squared terms
+        for feat in self.top_k_features_after_fd:
+            self.poly_feature_names.append(f"{feat}_sq")
+        
+        # Pairwise interactions (limit to avoid explosion)
+        # Only create interactions for top features
+        max_interactions = min(20, len(self.top_k_features_after_fd))
+        top_for_interactions = self.top_k_features_after_fd[:max_interactions]
+        
+        for i in range(len(top_for_interactions)):
+            for j in range(i + 1, len(top_for_interactions)):
+                feat1 = top_for_interactions[i]
+                feat2 = top_for_interactions[j]
+                self.poly_feature_names.append(f"{feat1}_x_{feat2}")
+        
+        print(f"   Will create {len(self.poly_feature_names)} polynomial features")
+
+    def _add_polynomial_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add polynomial and interaction features."""
+        df_out = df.copy()
+        
+        # Add squared terms
+        for feat in self.top_k_features_after_fd:
+            if feat in df.columns:
+                df_out[f"{feat}_sq"] = df[feat] ** 2
+        
+        # Add pairwise interactions (limit to avoid explosion)
+        max_interactions = min(20, len(self.top_k_features_after_fd))
+        top_for_interactions = self.top_k_features_after_fd[:max_interactions]
+        
+        for i in range(len(top_for_interactions)):
+            for j in range(i + 1, len(top_for_interactions)):
+                feat1 = top_for_interactions[i]
+                feat2 = top_for_interactions[j]
+                
+                if feat1 in df.columns and feat2 in df.columns:
+                    df_out[f"{feat1}_x_{feat2}"] = df[feat1] * df[feat2]
+        
+        return df_out
+
+    # ============================================================================
+    # Phase 5: Interaction Features (OLD - kept for compatibility)
     # ============================================================================
 
     def _add_interaction_features(self, df: pd.DataFrame) -> pd.DataFrame:

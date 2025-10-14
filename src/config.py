@@ -122,6 +122,14 @@ PCA_VARIANCE_THRESHOLD = 0.85  # Retain 85% variance in PCA
 CORRELATION_THRESHOLD = 0.95  # Cluster features with r > 0.95
 MAX_FEATURES = 150  # Maximum features for final model
 
+# Fractional differencing parameters
+FRAC_DIFF_D = 0.5  # Fractional difference order (0.5 = semi-stationary)
+FRAC_DIFF_THRESHOLD = 0.01  # Minimum weight threshold
+
+# Feature selection stages
+TOP_K_AFTER_FRAC_DIFF = 80  # Top K features to select after fractional differencing
+POLY_DEGREE = 2  # Polynomial degree for interactions
+
 # Volatility regime thresholds (percentiles)
 VOL_REGIME_LOW = 33  # Below 33rd percentile = low volatility
 VOL_REGIME_HIGH = 66  # Above 66th percentile = high volatility
