@@ -123,7 +123,8 @@ CORRELATION_THRESHOLD = 0.95  # Cluster features with r > 0.95
 MAX_FEATURES = 150  # Maximum features for final model
 
 # Fractional differencing parameters
-FRAC_DIFF_D = 0.5  # Fractional difference order (0.5 = semi-stationary)
+FRAC_DIFF_D_VALUES = [0.2, 0.3, 0.4, 0.5]  # Fractional difference orders to try
+FRAC_DIFF_D = 0.5  # Fractional difference order (deprecated - use FRAC_DIFF_D_VALUES)
 FRAC_DIFF_THRESHOLD = 0.01  # Minimum weight threshold
 
 # Feature selection stages
