@@ -77,14 +77,22 @@ class FeatureEngineer:
         forbidden = {TARGET_COL, "forward_returns"}
         removed = [c for c in self.continuous_features if c in forbidden]
         if removed:
-            print(f"⚠️  Removed forbidden features from continuous_features to avoid leakage: {removed}")
-        self.continuous_features = [c for c in self.continuous_features if c not in forbidden]
+            print(
+                f"⚠️  Removed forbidden features from continuous_features to avoid leakage: {removed}"
+            )
+        self.continuous_features = [
+            c for c in self.continuous_features if c not in forbidden
+        ]
         self.temporal_windows = temporal_windows
         self.extended_windows = extended_windows
         self.pca_variance_threshold = pca_variance_threshold
         self.correlation_threshold = correlation_threshold
         self.random_seed = random_seed
-        self.frac_diff_d_values = frac_diff_d_values if frac_diff_d_values is not None else [0.2, 0.3, 0.4, 0.5]
+        self.frac_diff_d_values = (
+            frac_diff_d_values
+            if frac_diff_d_values is not None
+            else [0.2, 0.3, 0.4, 0.5]
+        )
         self.frac_diff_threshold = frac_diff_threshold
         self.top_k_after_frac_diff = top_k_after_frac_diff
         self.poly_degree = poly_degree
@@ -98,6 +106,7 @@ class FeatureEngineer:
         self.poly_feature_names = []
         self.final_selected_features = []  # Final top 150 features
         self.fd_selected_features = {}  # Track which fd value was selected for each feature
+        self.fd_features_to_drop = []  # Features to drop due to high correlation (determined during fit)
         self.is_fitted = False
 
         np.random.seed(random_seed)
@@ -136,12 +145,14 @@ class FeatureEngineer:
         df_with_fd = self._add_fractional_diff_features(df_base)
 
         # Phase 3: Select top-k features using LGBM
-        print(f"🔍 Selecting top {self.top_k_after_frac_diff} features after fractional differencing...")
+        print(
+            f"🔍 Selecting top {self.top_k_after_frac_diff} features after fractional differencing..."
+        )
         self.top_k_features_after_fd = self._select_top_k_features(
             df_with_fd, self.top_k_after_frac_diff
         )
         print(f"   Selected {len(self.top_k_features_after_fd)} features")
-        
+
         # Track which fd values were selected
         self._track_fd_selection()
 
@@ -151,7 +162,7 @@ class FeatureEngineer:
 
         # Phase 5: Keep only top-k features before adding polynomials
         df_top_k = self._keep_top_k_features(df_with_fd)
-        
+
         # Phase 6: Create full feature set with polynomials on top-k
         print("🏗  Creating full feature set with polynomials...")
         df_with_poly = self._add_polynomial_features(df_top_k)
@@ -162,7 +173,7 @@ class FeatureEngineer:
             df_with_poly, MAX_FEATURES
         )
         print(f"   Selected {len(self.final_selected_features)} final features")
-        
+
         # Track final fd selection
         self._track_final_fd_selection()
 
@@ -236,19 +247,19 @@ class FeatureEngineer:
     def _add_base_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add all base features (temporal, volatility, regime, PCA)."""
         df_out = df.copy()
-        
+
         # Add temporal features
         df_out = self._add_temporal_features(df_out)
-        
+
         # Add volatility features
         df_out = self._add_volatility_features(df_out)
-        
+
         # Add regime features
         df_out = self._add_regime_features(df_out)
-        
+
         # Add PCA features
         df_out = self._add_pca_features(df_out)
-        
+
         return df_out
 
     # ============================================================================
@@ -488,91 +499,111 @@ class FeatureEngineer:
         """Calculate fractional differencing weights for all d values."""
         # Calculate binomial weights for each fractional differencing order
         k_max = 100  # Maximum lag to consider
-        
+
         for d in self.frac_diff_d_values:
             weights = [1.0]
-            
+
             for k in range(1, k_max + 1):
                 weight = -weights[-1] * (d - k + 1) / k
                 if abs(weight) < self.frac_diff_threshold:
                     break
                 weights.append(weight)
-            
+
             self.frac_diff_weights[d] = np.array(weights)
-            print(f"   Fractional diff weights for d={d}: {len(self.frac_diff_weights[d])} terms")
+            print(
+                f"   Fractional diff weights for d={d}: {len(self.frac_diff_weights[d])} terms"
+            )
 
     def _add_fractional_diff_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add fractional differencing features with correlation-based selection."""
         df_out = df.copy()
-        
+
         # Get all numeric columns except special columns
         special_cols = ["date_id", "risk_free_rate", TARGET_COL, "forward_returns"]
-        
+
         # Apply fractional differencing to selected continuous features
         # Create all fd features for all d values
         fd_features_by_base = {}  # Store all fd versions for each base feature
-        
+
         for feature in self.continuous_features:
             if feature not in df.columns or df[feature].isna().all():
                 continue
-            
-            series = df[feature].fillna(method='ffill').fillna(0).values
+
+            series = df[feature].ffill().fillna(0).values
             fd_features_by_base[feature] = {}
-            
+
             # Create fd features for all d values
             for d in self.frac_diff_d_values:
                 fd_series = self._fractional_diff_series(series, d)
                 col_name = f"{feature}_fd{d}"
                 df_out[col_name] = fd_series
                 fd_features_by_base[feature][d] = col_name
-        
-        # Perform correlation-based selection within each feature's fd versions
-        # Keep the one with highest variance if correlation > 0.95
-        features_to_drop = []
-        
-        for feature, fd_cols_dict in fd_features_by_base.items():
-            if len(fd_cols_dict) <= 1:
-                continue
-                
-            # Get the fd column names for this feature
-            fd_cols = list(fd_cols_dict.values())
-            
-            # Calculate correlation matrix
-            fd_data = df_out[fd_cols].dropna()
-            if len(fd_data) < 10:  # Skip if too few valid rows
-                continue
-                
-            corr_matrix = fd_data.corr()
-            variances = fd_data.var()
-            
-            # Track which features to keep
-            to_keep = set(fd_cols)
-            
-            # Check each pair for high correlation
-            for i, col1 in enumerate(fd_cols):
-                for j in range(i + 1, len(fd_cols)):
-                    col2 = fd_cols[j]
-                    
-                    if col1 not in to_keep or col2 not in to_keep:
-                        continue
-                        
-                    # If correlation > 0.95, drop the one with lower variance
-                    if abs(corr_matrix.loc[col1, col2]) > 0.95:
-                        if variances[col1] >= variances[col2]:
-                            to_keep.discard(col2)
-                        else:
-                            to_keep.discard(col1)
-            
-            # Mark features not in to_keep for removal
-            for col in fd_cols:
-                if col not in to_keep:
-                    features_to_drop.append(col)
-        
-        # Drop highly correlated fd features
-        if features_to_drop:
-            print(f"   Dropping {len(features_to_drop)} fd features due to high correlation (>0.95)")
-            df_out = df_out.drop(columns=features_to_drop)
-        
+
+        # Only perform correlation-based selection during fit
+        # During transform, use the stored list of features to drop
+        if not self.is_fitted:
+            # Perform correlation-based selection within each feature's fd versions
+            # Keep the one with highest variance if correlation > 0.95
+            features_to_drop = []
+
+            for feature, fd_cols_dict in fd_features_by_base.items():
+                if len(fd_cols_dict) <= 1:
+                    continue
+
+                # Get the fd column names for this feature
+                fd_cols = list(fd_cols_dict.values())
+
+                # Calculate correlation matrix
+                fd_data = df_out[fd_cols].dropna()
+                if len(fd_data) < 10:  # Skip if too few valid rows
+                    continue
+
+                corr_matrix = fd_data.corr()
+                variances = fd_data.var()
+
+                # Track which features to keep
+                to_keep = set(fd_cols)
+
+                # Check each pair for high correlation
+                for i, col1 in enumerate(fd_cols):
+                    for j in range(i + 1, len(fd_cols)):
+                        col2 = fd_cols[j]
+
+                        if col1 not in to_keep or col2 not in to_keep:
+                            continue
+
+                        # If correlation > 0.95, drop the one with lower variance
+                        if abs(corr_matrix.loc[col1, col2]) > 0.95:
+                            if variances[col1] >= variances[col2]:
+                                to_keep.discard(col2)
+                            else:
+                                to_keep.discard(col1)
+
+                # Mark features not in to_keep for removal
+                for col in fd_cols:
+                    if col not in to_keep:
+                        features_to_drop.append(col)
+
+            # Store the features to drop for use during transform
+            self.fd_features_to_drop = features_to_drop
+
+            # Drop highly correlated fd features
+            if features_to_drop:
+                print(
+                    f"   Dropping {len(features_to_drop)} fd features due to high correlation (>0.95)"
+                )
+                df_out = df_out.drop(columns=features_to_drop)
+        else:
+            # During transform, drop the same features that were dropped during fit
+            features_to_drop = [
+                col for col in self.fd_features_to_drop if col in df_out.columns
+            ]
+            if features_to_drop:
+                print(
+                    f"   Dropping {len(features_to_drop)} fd features due to high correlation (>0.95)"
+                )
+                df_out = df_out.drop(columns=features_to_drop)
+
         return df_out
 
     def _fractional_diff_series(self, series: np.ndarray, d: float) -> np.ndarray:
@@ -580,13 +611,13 @@ class FeatureEngineer:
         weights = self.frac_diff_weights[d]
         n = len(series)
         result = np.zeros(n)
-        
+
         for i in range(len(weights), n):
-            result[i] = np.dot(weights, series[i - len(weights) + 1:i + 1][::-1])
-        
+            result[i] = np.dot(weights, series[i - len(weights) + 1 : i + 1][::-1])
+
         # Set early values to NaN
-        result[:len(weights)] = np.nan
-        
+        result[: len(weights)] = np.nan
+
         return result
 
     # ============================================================================
@@ -597,48 +628,56 @@ class FeatureEngineer:
         """Track which fd values were selected for features and print statistics."""
         # Count how many features were selected for each fd value
         fd_counts = {d: 0 for d in self.frac_diff_d_values}
-        
+
         for feature in self.top_k_features_after_fd:
             # Check if this is an fd feature
             for d in self.frac_diff_d_values:
                 if f"_fd{d}" in feature:
                     fd_counts[d] += 1
                     break
-        
+
         # Print statistics
         print("\n📊 Fractional Differencing Selection Statistics (Top-K):")
         print("=" * 60)
         total_fd_features = sum(fd_counts.values())
         for d in sorted(self.frac_diff_d_values):
             count = fd_counts[d]
-            percentage = (count / total_fd_features * 100) if total_fd_features > 0 else 0
+            percentage = (
+                (count / total_fd_features * 100) if total_fd_features > 0 else 0
+            )
             print(f"   fd={d}: {count} features ({percentage:.1f}%)")
         print(f"   Total FD features: {total_fd_features}")
-        print(f"   Non-FD features: {len(self.top_k_features_after_fd) - total_fd_features}")
+        print(
+            f"   Non-FD features: {len(self.top_k_features_after_fd) - total_fd_features}"
+        )
         print("=" * 60 + "\n")
 
     def _track_final_fd_selection(self):
         """Track which fd values were selected in final features and print statistics."""
         # Count how many features were selected for each fd value
         fd_counts = {d: 0 for d in self.frac_diff_d_values}
-        
+
         for feature in self.final_selected_features:
             # Check if this is an fd feature (could be base fd or polynomial with fd)
             for d in self.frac_diff_d_values:
                 if f"_fd{d}" in feature:
                     fd_counts[d] += 1
                     break
-        
+
         # Print statistics
         print("\n📊 Fractional Differencing Selection Statistics (Final):")
         print("=" * 60)
         total_fd_features = sum(fd_counts.values())
         for d in sorted(self.frac_diff_d_values):
             count = fd_counts[d]
-            percentage = (count / total_fd_features * 100) if total_fd_features > 0 else 0
+            percentage = (
+                (count / total_fd_features * 100) if total_fd_features > 0 else 0
+            )
             print(f"   fd={d}: {count} features ({percentage:.1f}%)")
         print(f"   Total FD features: {total_fd_features}")
-        print(f"   Non-FD features: {len(self.final_selected_features) - total_fd_features}")
+        print(
+            f"   Non-FD features: {len(self.final_selected_features) - total_fd_features}"
+        )
         print("=" * 60 + "\n")
 
     def _select_top_k_features(self, df: pd.DataFrame, top_k: int) -> List[str]:
@@ -646,81 +685,83 @@ class FeatureEngineer:
         # Prepare data
         special_cols = ["date_id", "risk_free_rate", TARGET_COL, "forward_returns"]
         feature_cols = [col for col in df.columns if col not in special_cols]
-        
+
         # Remove high-NaN features
         nan_ratio = df[feature_cols].isna().mean()
         valid_features = nan_ratio[nan_ratio < 0.5].index.tolist()
-        
+
         if len(valid_features) == 0:
             return []
-        
+
         X = df[valid_features].fillna(0)
         y = df[TARGET_COL]
-        
+
         # Remove NaN targets
         valid_idx = ~y.isna()
         X = X[valid_idx]
         y = y[valid_idx]
-        
+
         if len(y) == 0:
             return []
-        
+
         # Train a simple LightGBM model
         print(f"   Training LGBM on {len(valid_features)} features...")
-        
+
         import lightgbm as lgb
-        
+
         train_data = lgb.Dataset(X, label=y)
         params = {
-            'objective': 'regression',
-            'metric': 'rmse',
-            'num_leaves': 31,
-            'learning_rate': 0.05,
-            'feature_fraction': 0.8,
-            'bagging_fraction': 0.8,
-            'bagging_freq': 5,
-            'verbose': -1,
-            'seed': self.random_seed,
+            "objective": "regression",
+            "metric": "rmse",
+            "num_leaves": 31,
+            "learning_rate": 0.05,
+            "feature_fraction": 0.8,
+            "bagging_fraction": 0.8,
+            "bagging_freq": 5,
+            "verbose": -1,
+            "seed": self.random_seed,
         }
-        
+
         model = lgb.train(
             params,
             train_data,
             num_boost_round=100,
             valid_sets=[train_data],
-            callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)]
+            callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)],
         )
-        
+
         # Get feature importance
-        importance = model.feature_importance(importance_type='gain')
+        importance = model.feature_importance(importance_type="gain")
         feature_importance = dict(zip(valid_features, importance))
-        
+
         # Sort and select top-k
-        sorted_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
+        sorted_features = sorted(
+            feature_importance.items(), key=lambda x: x[1], reverse=True
+        )
         selected = [f for f, _ in sorted_features[:top_k]]
-        
+
         print(f"   Top 10 features: {selected[:10]}")
-        
+
         return selected
 
     def _keep_top_k_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Keep only top-k features selected during fit."""
         special_cols = ["date_id", "risk_free_rate", TARGET_COL, "forward_returns"]
         cols_to_keep = special_cols + self.top_k_features_after_fd
-        
+
         # Keep only columns that exist
         cols_to_keep = [col for col in cols_to_keep if col in df.columns]
-        
+
         return df[cols_to_keep]
 
     def _keep_final_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Keep only final selected features."""
         special_cols = ["date_id", "risk_free_rate", TARGET_COL, "forward_returns"]
         cols_to_keep = special_cols + self.final_selected_features
-        
+
         # Keep only columns that exist
         cols_to_keep = [col for col in cols_to_keep if col in df.columns]
-        
+
         return df[cols_to_keep]
 
     # ============================================================================
@@ -731,45 +772,45 @@ class FeatureEngineer:
         """Determine polynomial feature names based on top-k features."""
         # Generate interaction pairs and squared terms
         self.poly_feature_names = []
-        
+
         # Squared terms
         for feat in self.top_k_features_after_fd:
             self.poly_feature_names.append(f"{feat}_sq")
-        
+
         # Pairwise interactions (limit to avoid explosion)
         # Only create interactions for top features
         max_interactions = min(20, len(self.top_k_features_after_fd))
         top_for_interactions = self.top_k_features_after_fd[:max_interactions]
-        
+
         for i in range(len(top_for_interactions)):
             for j in range(i + 1, len(top_for_interactions)):
                 feat1 = top_for_interactions[i]
                 feat2 = top_for_interactions[j]
                 self.poly_feature_names.append(f"{feat1}_x_{feat2}")
-        
+
         print(f"   Will create {len(self.poly_feature_names)} polynomial features")
 
     def _add_polynomial_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add polynomial and interaction features."""
         df_out = df.copy()
-        
+
         # Add squared terms
         for feat in self.top_k_features_after_fd:
             if feat in df.columns:
                 df_out[f"{feat}_sq"] = df[feat] ** 2
-        
+
         # Add pairwise interactions (limit to avoid explosion)
         max_interactions = min(20, len(self.top_k_features_after_fd))
         top_for_interactions = self.top_k_features_after_fd[:max_interactions]
-        
+
         for i in range(len(top_for_interactions)):
             for j in range(i + 1, len(top_for_interactions)):
                 feat1 = top_for_interactions[i]
                 feat2 = top_for_interactions[j]
-                
+
                 if feat1 in df.columns and feat2 in df.columns:
                     df_out[f"{feat1}_x_{feat2}"] = df[feat1] * df[feat2]
-        
+
         return df_out
 
     # ============================================================================
