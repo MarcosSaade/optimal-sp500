@@ -5,7 +5,6 @@
 ### 1. Create Virtual Environment
 
 ```bash
-cd build
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
@@ -79,12 +78,18 @@ python evaluate.py --fold 3
 
 ## Expected Output
 
-After training and evaluation, the pipeline will write per-fold and aggregate evaluation metrics to `evaluation_results.csv`. The Quick Start intentionally omits fixed numeric examples; consult the generated CSV or the console output for dataset-specific results.
+After training and evaluation, you will see:
+
+- Per-fold performance metrics printed to console
+- Aggregate statistics across all folds
+- Detailed results saved to `evaluation_results.csv`
+
+The specific metrics will vary based on your dataset and hyperparameters.
 
 ## Directory Structure After Training
 
 ```
-build/
+.
 ├── data/
 │   ├── train.csv              # Your data
 │   └── processed/             # Generated
@@ -164,13 +169,14 @@ You need to train models first. Run `python train.py --stage all`.
 
 ## Next Steps
 
-1. **Analyze Results**: Review `evaluation_results.csv`
-2. **Tune Hyperparameters**: Modify `src/config.py`
-3. **Add Features**: Extend `src/features.py`
-4. **Try Different Allocators**: Modify `src/allocation.py`
+1. **Analyze Results**: Review `evaluation_results.csv` for detailed metrics
+2. **Tune Hyperparameters**: Run `python tune.py --stage all` or modify `src/config.py`
+3. **Add Features**: Extend `src/features.py` with custom feature engineering
+4. **Explore Data**: Open `notebooks/eda.ipynb` for data analysis
 
 ## Getting Help
 
-- Check main `README.md` for detailed methodology
-- Review code documentation in each module
-- Examine `notebooks/eda.ipynb` for data insights
+- **README.md**: Project overview and methodology
+- **DOCUMENTATION.md**: Comprehensive technical documentation
+- **Code Documentation**: Detailed docstrings in each module
+- **EDA Notebook**: `notebooks/eda.ipynb` for data insights

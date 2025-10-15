@@ -116,9 +116,21 @@ logs/
 *.pt
 *.pth
 *.joblib
+*.pkl
+
+# Model directories
+models/returns/
+models/volatility/
+models/meta/
+models/ensemble/
+models/tuning_results/
 
 # Data
-/data/
+/data/train.csv
+/data/processed/
+
+# Keep README files
+!data/README.md
 
 # Secrets and env
 .env
@@ -145,5 +157,8 @@ docker-compose.override.yml
 
 # Notebook checkpoints
 **/.ipynb_checkpoints
+
+# Evaluation results
+evaluation_results.csv
 
 # End of file

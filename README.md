@@ -15,7 +15,7 @@ This project implements a machine learning pipeline for predicting S&P 500 exces
 3. **Meta-Labeling**: Confidence-based position sizing via meta-classifier
 4. **Position Allocation**: Regime-dependent Kelly criterion for optimal sizing
 
-**Performance**: See evaluation outputs for detailed metrics (recorded by the evaluation pipeline)
+Performance metrics are saved to `evaluation_results.csv` after running the evaluation pipeline.
 
 ---
 
@@ -94,8 +94,6 @@ python tune.py --stage all
 # Tune specific components
 python tune.py --stage returns --n-trials 100
 python tune.py --stage volatility --n-trials 50
-
-# See TUNING_GUIDE.md for advanced options
 ```
 
 ---
@@ -103,7 +101,7 @@ python tune.py --stage volatility --n-trials 50
 ## 📁 Project Structure
 
 ```
-build/
+.
 ├── README.md                 # This file
 ├── requirements.txt          # Python dependencies
 ├── train.py                 # Training orchestration
@@ -251,15 +249,15 @@ Where:
 
 ## 📈 Performance Metrics
 
-### Cross-Validation Results (5-Fold Purged CV)
+All performance metrics are saved to `evaluation_results.csv` after running the evaluation pipeline. The evaluation includes:
 
-| Metric | Value |
-|--------|-------|
-Numerical performance results are recorded by the evaluation pipeline and exported to `evaluation_results.csv`. The public README omits explicit performance figures; consult the evaluation output for full numeric detail.
+- **Sharpe Ratio**: Annualized risk-adjusted returns (primary metric)
+- **Directional Accuracy**: Percentage of correct predictions
+- **Per-Fold Analysis**: Metrics for each cross-validation fold
+- **Meta-Labeling Impact**: Improvement from confidence-based position sizing
 
-### Performance by Fold
+Run `python evaluate.py` to generate detailed performance reports.
 
-Per-fold numerical results are produced by the evaluation pipeline and saved to `evaluation_results.csv`. See that output for dataset-specific fold metrics.
 ---
 
 ## 🛠️ Technical Details
@@ -294,7 +292,12 @@ All hyperparameters and settings are in `src/config.py`:
 
 ## 📚 Theoretical Foundation
 
-This implementation is based on established financial machine learning techniques and best practices, including purged cross-validation and meta-labeling for position sizing. Additional methodological extensions are tracked in the project issue tracker and will be validated before being reported.
+This implementation is based on established financial machine learning techniques:
+
+- **Purged K-Fold Cross-Validation**: Prevents label leakage in time series with overlapping targets
+- **Meta-Labeling**: Separates prediction from position sizing for improved risk management
+- **Regime-Dependent Allocation**: Adapts position sizing to market volatility conditions
+- **Feature Engineering**: Advanced temporal and volatility features with dimensionality reduction
 
 ---
 
@@ -327,11 +330,7 @@ python src/train.py --stage meta
 
 ---
 
-## Enhancements
 
-Potential enhancements are tracked in the project issue tracker. The README intentionally omits speculative numeric impact estimates; implementation and empirical validation are required before reporting measurable changes.
-
----
 
 ## 📊 Evaluation Metrics
 
@@ -370,7 +369,6 @@ The pipeline evaluates models using multiple metrics:
 ### Hyperparameter Tuning
 - Default parameters are optimized for this dataset
 - Use `tune.py` for systematic hyperparameter search with Optuna
-- See `TUNING_GUIDE.md` for detailed tuning instructions
 - Modify `LGBM_PARAMS` in `config.py` for manual experimentation
 
 ### Cross-Validation
@@ -380,26 +378,26 @@ The pipeline evaluates models using multiple metrics:
 
 ---
 
-## 📝 References
-
-See the project's bibliography or issue tracker for methodology references and suggested citations.
-
----
-
 ## 📞 Support
 
 For questions or issues:
 1. Check the code documentation in each module
-2. Review the methodology section above
-3. Examine the EDA notebook for data insights
+2. Review `DOCUMENTATION.md` for detailed technical information
+3. Examine `notebooks/eda.ipynb` for data insights
+4. See `QUICKSTART.md` for setup instructions
 
 ---
 
 ## ⚖️ License
 
-This project is for educational and research purposes.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
-**Last Updated**: October 2025  
-**Status**: Production Ready ✅
+## 👤 Author
+
+**Marcos Saade**
+
+---
+
+*Last Updated: October 2025*

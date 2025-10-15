@@ -2,9 +2,7 @@
 
 ## Overview
 
-This project implements a sophisticated machine learning pipeline for predicting S&P 500 excess returns using ensemble methods, meta-labeling, and regime-dependent position sizing.
-
-**Performance**: See evaluation results (per-fold and aggregate statistics are recorded by the evaluation pipeline)
+This project implements a machine learning pipeline for predicting S&P 500 excess returns using ensemble methods, meta-labeling, and regime-dependent position sizing.
 
 ## Architecture
 
@@ -128,7 +126,7 @@ meta_label = 1 if sign(prediction) == sign(actual) else 0
 final_allocation = base_allocation × meta_probability
 ```
 
-**Impact**: measurable average improvement in risk-adjusted returns (see evaluation_results.csv)
+**Impact**: Improves risk-adjusted returns by scaling positions based on prediction confidence.
 
 #### 6. Position Allocation (`src/allocation.py`)
 
@@ -269,17 +267,23 @@ Results saved to `evaluation_results.csv`:
 
 ## Performance Results
 
-Performance numbers have been removed from the public documentation. Detailed per-fold and aggregate evaluation metrics are saved by the evaluation pipeline to `evaluation_results.csv`. Consult that file for numerical results and exportable reports.
+Performance metrics are saved to `evaluation_results.csv` after running the evaluation pipeline. This includes:
+
+- Per-fold Sharpe ratios (base and meta-labeling)
+- Aggregate statistics across all folds
+- Directional accuracy
+- Meta-labeling improvement percentages
+
+Run `python evaluate.py` to generate the complete performance report.
 
 ## Theoretical Foundation
 
-Based on established financial machine learning literature and best practices:
+This implementation is based on established financial machine learning literature:
 
-- Purged K-Fold prevents label leakage
-- Embargo periods reduce serial correlation issues
-- Meta-labeling separates prediction quality from position sizing
-
-The documentation focuses on methods and reproducible procedures. Implementation details and citations may be added to a references section as required for publication.
+- **Purged K-Fold Cross-Validation**: Prevents label leakage in overlapping time series
+- **Embargo Periods**: Reduces serial correlation issues in validation
+- **Meta-Labeling**: Separates prediction quality from position sizing
+- **Regime-Dependent Allocation**: Adapts to market conditions
 
 ## Code Quality
 
@@ -303,19 +307,14 @@ The documentation focuses on methods and reproducible procedures. Implementation
 - Informative error messages
 - Graceful fallbacks
 
-## Enhancements and Roadmap
-
-Potential enhancements are tracked in the project issue tracker. The documentation intentionally omits speculative numeric impact estimates; implementation and empirical validation are required before reporting measurable changes.
-
 ## File Structure
 
 ```
-build/
-├── README.md                   # Project overview and methodology
+.
+├── README.md                   # Project overview
 ├── QUICKSTART.md               # Getting started guide
-├── DOCUMENTATION.md            # This file - comprehensive documentation
+├── DOCUMENTATION.md            # Technical documentation
 ├── requirements.txt            # Python dependencies
-├── .gitignore                  # Git ignore patterns
 │
 ├── data/                       # Data directory
 │   ├── README.md              # Data format and placement
@@ -409,6 +408,3 @@ Track changes to hyperparameters in `src/config.py`.
 
 ---
 
-**Last Updated**: October 2025  
-**Version**: 1.0.0  
-**Status**: Production Ready ✅
