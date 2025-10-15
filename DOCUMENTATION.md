@@ -276,36 +276,6 @@ Performance metrics are saved to `evaluation_results.csv` after running the eval
 
 Run `python evaluate.py` to generate the complete performance report.
 
-## Theoretical Foundation
-
-This implementation is based on established financial machine learning literature:
-
-- **Purged K-Fold Cross-Validation**: Prevents label leakage in overlapping time series
-- **Embargo Periods**: Reduces serial correlation issues in validation
-- **Meta-Labeling**: Separates prediction quality from position sizing
-- **Regime-Dependent Allocation**: Adapts to market conditions
-
-## Code Quality
-
-### Organization
-- Modular design (each component in separate file)
-- Clear separation of concerns
-- Minimal dependencies between modules
-
-### Documentation
-- Comprehensive docstrings
-- Type hints for function signatures
-- Inline comments for complex logic
-
-### Configuration
-- All hyperparameters in `config.py`
-- Easy to modify and experiment
-- Clear parameter descriptions
-
-### Error Handling
-- Validation of inputs
-- Informative error messages
-- Graceful fallbacks
 
 ## File Structure
 
