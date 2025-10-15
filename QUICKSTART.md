@@ -145,38 +145,3 @@ Open the Jupyter notebook:
 ```bash
 jupyter notebook notebooks/eda.ipynb
 ```
-
-## Troubleshooting
-
-### "Data file not found"
-
-Make sure `data/train.csv` exists. Check `data/README.md` for format details.
-
-### "Model must be fitted before prediction"
-
-You need to train models first. Run `python train.py --stage all`.
-
-### Memory Issues
-
-- Reduce `MAX_FEATURES` in `src/config.py`
-- Train one fold at a time: `python train.py --stage returns --folds 1`
-
-### Poor Performance
-
-- Check data quality (missing values, outliers)
-- Verify preprocessing completed successfully
-- Review `notebooks/eda.ipynb` for data insights
-
-## Next Steps
-
-1. **Analyze Results**: Review `evaluation_results.csv` for detailed metrics
-2. **Tune Hyperparameters**: Run `python tune.py --stage all` or modify `src/config.py`
-3. **Add Features**: Extend `src/features.py` with custom feature engineering
-4. **Explore Data**: Open `notebooks/eda.ipynb` for data analysis
-
-## Getting Help
-
-- **README.md**: Project overview and methodology
-- **DOCUMENTATION.md**: Comprehensive technical documentation
-- **Code Documentation**: Detailed docstrings in each module
-- **EDA Notebook**: `notebooks/eda.ipynb` for data insights
