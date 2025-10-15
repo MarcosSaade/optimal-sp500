@@ -112,12 +112,10 @@ Desktop.ini
 logs/
 
 # Models
-/models/
 *.h5
 *.pt
 *.pth
 *.joblib
-*.pkl
 
 # Data
 /data/
