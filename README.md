@@ -5,6 +5,8 @@
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB)](https://www.python.org/)
 [![LightGBM](https://img.shields.io/badge/Model-LightGBM-green)](https://lightgbm.readthedocs.io/)
 
+This repository contains code for my participation in a [Kaggle competition]([url](https://www.kaggle.com/competitions/hull-tactical-market-prediction/)):
+
 
 ## 📊 Overview
 
@@ -55,6 +57,8 @@ pip install -r requirements.txt
 
 Place your data file in the `data/` directory:
 - `train.csv`: Training data with features and target
+
+Due to the competition's policy, I can't upload the dataset here, but you can get it [here]([url](https://www.kaggle.com/competitions/hull-tactical-market-prediction/data)) 
 
 ### Run Pipeline
 
@@ -378,7 +382,7 @@ The pipeline evaluates models using multiple metrics:
 
 ---
 
-## 📞 Support
+## Issues
 
 For questions or issues:
 1. Check the code documentation in each module
