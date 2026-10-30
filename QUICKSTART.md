@@ -1,147 +1,66 @@
 # Quick Start Guide
 
-## Setup (5 minutes)
-
-### 1. Create Virtual Environment
+## Setup
 
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-### 2. Install Dependencies
-
-```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 3. Add Your Data
+Download `train.csv` from the [competition data page](https://www.kaggle.com/competitions/hull-tactical-market-prediction/data) and place it in `data/`. The competition's `test.csv` is 10 rows that also appear in `train.csv`, so it is not used.
 
-Place your `train.csv` file in the `data/` directory.
-
-## Training (2-4 hours)
-
-### Option A: Train Everything
+## Reproduce the results
 
 ```bash
-python train.py --stage all
+python experiments.py            # all configurations on the development folds (~30 min, mostly AutoML)
+python tune.py --vol-model lgbm  # nested Optuna search (~6 min)
+python experiments.py --summary  # ledger, best configuration, Deflated Sharpe Ratio
+python plots.py                  # figures in results/figures/
 ```
 
-This will:
-1. Preprocess data (create 5-fold purged CV splits)
-2. Train return prediction models (5 folds)
-3. Train volatility prediction models (5 folds)
-4. Train meta-labeling classifiers (5 folds)
-
-### Option B: Train Step-by-Step
+Faster subsets:
 
 ```bash
-# Step 1: Preprocess data
-python train.py --stage preprocess
-
-# Step 2: Train return models
-python train.py --stage returns
-
-# Step 3: Train volatility models  
-python train.py --stage volatility
-
-# Step 4: Train meta-labeling
-python train.py --stage meta
+python experiments.py --group grid   # return models x volatility models (~3 min)
+python experiments.py --group flat   # same, one tilt size for all regimes
+python experiments.py --group meta   # with meta-labeling
+python experiments.py --group automl # FLAML return model
 ```
 
-### Option C: Train Specific Folds
+## Evaluate and train the final configuration
+
+The final configuration is `FINAL_CONFIG` in `src/config.py`.
 
 ```bash
-# Train only folds 1 and 2
-python train.py --stage returns --folds 1,2
+python evaluate.py   # per-fold Sharpe ratio, competition score and drawdown vs buy-and-hold
+python train.py      # fit on all data, save to models/
 ```
 
-## Evaluation
+## The lockbox
 
-### Evaluate All Folds
+The last 500 trading days are held out from all development work. They are scored once:
 
 ```bash
-python evaluate.py
+python experiments.py --lockbox tuned_lgbm+lgbm
 ```
 
-### Evaluate Without Meta-Labeling
+The result is saved to `results/lockbox.csv`, and the script refuses to score the lockbox again unless you pass `--force`. Re-scoring after looking at the result would turn the lockbox into another development fold.
 
-```bash
-python evaluate.py --no-meta
-```
-
-### Evaluate Single Fold
-
-```bash
-python evaluate.py --fold 3
-```
-
-## Expected Output
-
-After training and evaluation, you will see:
-
-- Per-fold performance metrics printed to console
-- Aggregate statistics across all folds
-- Detailed results saved to `evaluation_results.csv`
-
-The specific metrics will vary based on your dataset and hyperparameters.
-
-## Directory Structure After Training
+## Outputs
 
 ```
-.
-├── data/
-│   ├── train.csv              # Your data
-│   └── processed/             # Generated
-│       ├── train_fold*.csv
-│       └── val_fold*.csv
-├── models/                    # Generated
-│   ├── returns/
-│   │   ├── fold_*.pkl
-│   │   ├── engineer_fold_*.pkl
-│   │   └── features_fold_*.csv
-│   ├── volatility/
-│   │   └── fold_*.pkl
-│   └── meta/
-│       └── fold_*.pkl
-├── evaluation_results.csv     # Generated
-└── ...
+results/
+├── experiments.csv      # one row per configuration tried
+├── lockbox.csv          # the one lockbox score
+├── lockbox_daily.csv    # lockbox daily allocations and returns
+├── figures/             # plots.py output
+├── returns/             # daily out-of-sample returns per configuration (generated)
+└── cache/               # engineered features per fold (generated)
+evaluation_results.csv   # evaluate.py output
+models/                  # train.py output
 ```
 
-## Retraining Models
+## Exploratory data analysis
 
-### Retrain Everything
-
-```bash
-python train.py --stage all --force
-```
-
-### Retrain Only Returns (Lightweight)
-
-```bash
-python train.py --stage returns
-```
-
-**Note**: If you retrain returns, you should also retrain volatility and meta-labeling since they depend on return predictions.
-
-### Proper Retraining After Return Model Changes
-
-```bash
-# Retrain return models
-python train.py --stage returns
-
-# Retrain dependent models
-python train.py --stage volatility
-python train.py --stage meta
-
-# Evaluate
-python evaluate.py
-```
-
-## Exploratory Data Analysis
-
-Open the Jupyter notebook:
-
-```bash
-jupyter notebook notebooks/eda.ipynb
-```
+`notebooks/eda.ipynb` covers missingness, outliers and the late-starting features that motivated the preprocessing choices.

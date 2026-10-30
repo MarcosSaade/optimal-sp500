@@ -2,14 +2,16 @@
 Data Preprocessing and Cross-Validation
 
 Implements:
-1. Purged K-Fold cross-validation (prevents label leakage)
+1. Purged walk-forward cross-validation (prevents label leakage)
 2. Data preprocessing (imputation, winsorization)
 3. Feature availability masks
+4. Fold construction, including the held-out lockbox
 """
 
 import numpy as np
 import pandas as pd
-from typing import List, Tuple, Dict, Optional
+from dataclasses import dataclass
+from typing import List, Tuple, Dict
 from pathlib import Path
 import pickle
 
@@ -18,7 +20,7 @@ from .config import *
 
 class PurgedKFold:
     """
-    Purged K-Fold Cross-Validation for time series with overlapping labels.
+    Purged walk-forward (expanding window) cross-validation.
 
     Prevents label leakage by purging training samples whose prediction
     horizons overlap with the validation period.
@@ -26,7 +28,9 @@ class PurgedKFold:
     For 1-day forward returns:
     - Label at time t depends on price at t+1
     - Purge training sample at t-1 from validation starting at t
-    - Add embargo period at end of validation to prevent serial correlation
+
+    Training data always precedes the validation window, so no embargo
+    is needed after it.
 
     Parameters
     ----------
@@ -36,8 +40,6 @@ class PurgedKFold:
         Minimum proportion of data for initial training (e.g., 0.3 = 30%)
     purge_gap : int
         Number of samples to purge before validation (1 for 1-day forward returns)
-    embargo_pct : float
-        Proportion of validation samples to embargo at end (e.g., 0.01 = 1%)
     verbose : bool
         Print detailed split information
     """
@@ -47,7 +49,6 @@ class PurgedKFold:
         n_splits: int = 5,
         min_train_pct: float = 0.3,
         purge_gap: int = 1,
-        embargo_pct: float = 0.01,
         verbose: bool = True,
     ):
         if n_splits < 2:
@@ -56,13 +57,10 @@ class PurgedKFold:
             raise ValueError("min_train_pct must be between 0 and 1")
         if purge_gap < 0:
             raise ValueError("purge_gap must be >= 0")
-        if not 0 <= embargo_pct < 0.5:
-            raise ValueError("embargo_pct must be between 0 and 0.5")
 
         self.n_splits = n_splits
         self.min_train_pct = min_train_pct
         self.purge_gap = purge_gap
-        self.embargo_pct = embargo_pct
         self.verbose = verbose
 
         self.splits_ = []
@@ -98,7 +96,6 @@ class PurgedKFold:
             print(f"Min train size: {min_train_size:,} ({self.min_train_pct:.1%})")
             print(f"Fold size: ~{fold_size:,}")
             print(f"Purge gap: {self.purge_gap} samples")
-            print(f"Embargo: {self.embargo_pct:.1%} of validation")
             print()
 
         # Generate splits
@@ -113,52 +110,31 @@ class PurgedKFold:
             if val_end <= val_start:
                 continue
 
-            # Calculate embargo
-            val_size = val_end - val_start
-            embargo_size = int(val_size * self.embargo_pct)
-
             # Apply purging: remove samples overlapping with validation
             train_end = val_start - self.purge_gap
 
             if train_end <= 0:
                 continue
 
-            # Generate indices
             train_indices = np.arange(0, train_end)
+            val_indices = np.arange(val_start, val_end)
 
-            if embargo_size > 0:
-                val_indices = np.arange(val_start, val_end - embargo_size)
-            else:
-                val_indices = np.arange(val_start, val_end)
-
-            if len(val_indices) == 0:
-                continue
-
-            # Store split
             self.splits_.append((train_indices, val_indices))
-
-            # Statistics
-            purged_samples = self.purge_gap
-            embargoed_samples = embargo_size
-
-            stats = {
-                "fold": i + 1,
-                "train_size": len(train_indices),
-                "val_size": len(val_indices),
-                "purged_samples": purged_samples,
-                "embargoed_samples": embargoed_samples,
-            }
-            self.purge_stats_.append(stats)
+            self.purge_stats_.append(
+                {
+                    "fold": i + 1,
+                    "train_size": len(train_indices),
+                    "val_size": len(val_indices),
+                    "purged_samples": self.purge_gap,
+                }
+            )
 
             if self.verbose:
                 print(f"Fold {i + 1}:")
                 print(f"  Train: {len(train_indices):,} samples (0 to {train_end - 1})")
                 print(
-                    f"  Val:   {len(val_indices):,} samples ({val_start} to {val_indices[-1]})"
+                    f"  Val:   {len(val_indices):,} samples ({val_start} to {val_end - 1})"
                 )
-                print(f"  Purged: {purged_samples} samples")
-                if embargoed_samples > 0:
-                    print(f"  Embargoed: {embargoed_samples} samples")
                 print()
 
         if self.verbose:
@@ -419,12 +395,10 @@ def load_and_prepare_data(data_path: Path) -> pd.DataFrame:
     # Load data
     data = pd.read_csv(data_path)
 
-    # Get feature columns
-    special_cols = ["date_id", "risk_free_rate", TARGET_COL]
-    feature_cols = [col for col in data.columns if col not in special_cols]
+    feature_cols = get_feature_columns(data)
 
-    # Remove features to drop
-    feature_cols = [col for col in feature_cols if col not in FEATURES_TO_DROP]
+    # Drop the features excluded in config
+    data = data.drop(columns=[c for c in FEATURES_TO_DROP if c in data.columns])
 
     # Find and apply trim point
     trim_idx = find_trim_point(data, feature_cols)
@@ -436,3 +410,104 @@ def load_and_prepare_data(data_path: Path) -> pd.DataFrame:
     assert data["date_id"].is_monotonic_increasing, "date_id must be monotonic"
 
     return data
+
+
+def get_feature_columns(data: pd.DataFrame) -> List[str]:
+    """Raw input feature columns (everything except labels and bookkeeping)."""
+    return [
+        col
+        for col in data.columns
+        if col not in SPECIAL_COLS and col not in FEATURES_TO_DROP
+    ]
+
+
+@dataclass
+class Fold:
+    """
+    One evaluation window with its training window.
+
+    frame holds rows 0 .. eval_end - 1 of the data, preprocessed with
+    parameters fitted on the training rows only. Keeping the rows contiguous
+    lets rolling features in the evaluation window see their real history.
+    """
+
+    name: str
+    frame: pd.DataFrame
+    train_idx: np.ndarray  # Positions in frame used for fitting
+    eval_idx: np.ndarray  # Positions in frame that are scored
+
+
+def _build_fold(
+    data: pd.DataFrame,
+    name: str,
+    train_idx: np.ndarray,
+    eval_idx: np.ndarray,
+) -> Fold:
+    """Fit the preprocessor on train_idx and preprocess rows up to the eval end."""
+    feature_cols = get_feature_columns(data)
+    continuous_features = [f for f in feature_cols if not f.startswith("D")]
+
+    preprocessor = MarketDataPreprocessor(
+        continuous_features=continuous_features,
+        winsorize_config=WINSORIZE_CONFIG,
+        late_starter_features=LATE_STARTER_FEATURES,
+    )
+    preprocessor.fit(data.iloc[train_idx])
+
+    end = eval_idx[-1] + 1 if len(eval_idx) else len(data)
+    window = data.iloc[:end]
+    processed, masks = preprocessor.transform(window)
+    frame = pd.concat([processed, masks], axis=1).reset_index(drop=True)
+
+    return Fold(name=name, frame=frame, train_idx=train_idx, eval_idx=eval_idx)
+
+
+def make_folds(
+    data: pd.DataFrame,
+    lockbox: bool = False,
+    verbose: bool = False,
+) -> List[Fold]:
+    """
+    Build the evaluation folds.
+
+    The last LOCKBOX_DAYS rows are never part of a development fold.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Output of load_and_prepare_data
+    lockbox : bool or "all"
+        If True, return only the lockbox fold: train on all development
+        data, score the held-out rows. If "all", return one fold that trains
+        on every row (for the deployable model). Otherwise return the
+        walk-forward development folds.
+    verbose : bool
+        Print split information
+
+    Returns
+    -------
+    folds : List[Fold]
+    """
+    n_dev = len(data) - LOCKBOX_DAYS
+
+    if lockbox == "all":
+        # Deployment: fit on every row, nothing to score
+        return [_build_fold(data, "all", np.arange(len(data)), np.array([], int))]
+
+    if lockbox:
+        train_idx = np.arange(0, n_dev - CV_PURGE_GAP)
+        eval_idx = np.arange(n_dev, len(data))
+        return [_build_fold(data, "lockbox", train_idx, eval_idx)]
+
+    cv = PurgedKFold(
+        n_splits=CV_N_SPLITS,
+        min_train_pct=CV_MIN_TRAIN_PCT,
+        purge_gap=CV_PURGE_GAP,
+        verbose=verbose,
+    )
+    splits = cv.split(data.iloc[:n_dev])
+
+    return [
+        _build_fold(data, str(i), train_idx, val_idx)
+        for i, (train_idx, val_idx) in enumerate(splits, 1)
+    ]

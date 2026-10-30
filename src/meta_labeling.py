@@ -3,18 +3,23 @@ Meta-Labeling
 
 Confidence-based position sizing using a meta-classifier.
 
-- Primary model predicts returns (direction and magnitude)
-- Meta-classifier predicts if primary model is correct
-- Scale positions by meta-probability
+- Primary model predicts returns; its sign sets the direction of the tilt
+  away from the neutral position
+- Meta-classifier predicts whether that sign will be right
+- The tilt is scaled by the meta-probability relative to its base rate
+
+The meta-classifier must be trained on out-of-sample primary predictions
+(see pipeline.py): on in-sample predictions the primary model looks far
+more accurate than it is.
 """
 
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
 from pathlib import Path
 from typing import Dict
 import pickle
 
+from .boosting import train_booster
 from .config import *
 
 
@@ -25,13 +30,11 @@ class MetaLabelPipeline:
     Workflow:
     1. Generate meta-labels from primary predictions
     2. Train meta-classifier to predict correctness
-    3. Use meta-probabilities to scale positions
+    3. Use meta-probabilities to scale the tilt
     """
 
     def __init__(
         self,
-        meta_label_method: str = META_LABEL_METHOD,
-        min_confidence: float = META_MIN_CONFIDENCE,
         params: Dict = None,
         num_boost_round: int = LGBM_META_ROUNDS,
         early_stopping_rounds: int = LGBM_META_EARLY_STOP,
@@ -41,10 +44,6 @@ class MetaLabelPipeline:
 
         Parameters
         ----------
-        meta_label_method : str
-            How to generate meta-labels ("sign", "barrier")
-        min_confidence : float
-            Minimum meta-probability to trade (0 = always trade)
         params : Dict, optional
             LightGBM parameters
         num_boost_round : int
@@ -52,32 +51,20 @@ class MetaLabelPipeline:
         early_stopping_rounds : int
             Early stopping patience
         """
-        self.meta_label_method = meta_label_method
-        self.min_confidence = min_confidence
         self.params = params if params is not None else LGBM_META_PARAMS.copy()
         self.num_boost_round = num_boost_round
         self.early_stopping_rounds = early_stopping_rounds
 
         self.model = None
-        self.feature_names = None
-        self.is_fitted = False
+        self.base_rate = None
 
-    def _generate_meta_labels(
-        self,
+    @staticmethod
+    def generate_meta_labels(
         predictions: np.ndarray,
         actuals: np.ndarray,
     ) -> np.ndarray:
-        """
-        Generate meta-labels: 1 if prediction correct, 0 otherwise.
-
-        For "sign" method: 1 if sign(prediction) == sign(actual)
-        """
-        if self.meta_label_method == "sign":
-            pred_sign = np.sign(predictions)
-            actual_sign = np.sign(actuals)
-            return (pred_sign == actual_sign).astype(int)
-        else:
-            raise ValueError(f"Unknown method: {self.meta_label_method}")
+        """Meta-labels: 1 if sign(prediction) == sign(actual), else 0."""
+        return (np.sign(predictions) == np.sign(actuals)).astype(int)
 
     def _prepare_meta_features(
         self,
@@ -91,102 +78,51 @@ class MetaLabelPipeline:
         - Original features (market conditions, regimes)
         - Prediction magnitude (confidence proxy)
         - Prediction sign
-        - Volatility features
+        - Rolling volatility of past predictions
         """
-        meta_features = features.copy()
+        meta_features = features.reset_index(drop=True).copy()
 
-        # Add prediction-based features
         meta_features["pred_magnitude"] = np.abs(predictions)
         meta_features["pred_sign"] = np.sign(predictions)
 
         # Prediction volatility (only using past predictions)
         pred_series = pd.Series(predictions)
         for window in [5, 10, 21]:
-            rolling_std = (
-                pred_series.rolling(window, min_periods=1).std().shift(1).fillna(0.0)
+            meta_features[f"pred_vol_{window}"] = (
+                pred_series.rolling(window, min_periods=1).std().shift(1)
             )
-            meta_features[f"pred_vol_{window}"] = rolling_std
 
-        return meta_features
+        return meta_features.fillna(0)
 
     def fit(
         self,
-        train_features: pd.DataFrame,
-        train_predictions: np.ndarray,
-        train_actuals: np.ndarray,
-        val_features: pd.DataFrame = None,
-        val_predictions: np.ndarray = None,
-        val_actuals: np.ndarray = None,
+        features: pd.DataFrame,
+        predictions: np.ndarray,
+        actuals: np.ndarray,
     ) -> "MetaLabelPipeline":
         """
-        Train meta-labeling pipeline.
+        Train the meta-classifier.
 
         Parameters
         ----------
-        train_features : pd.DataFrame
-            Training features
-        train_predictions : np.ndarray
-            Primary model predictions on training set
-        train_actuals : np.ndarray
-            Actual returns on training set
-        val_features : pd.DataFrame, optional
-            Validation features for early stopping
-        val_predictions : np.ndarray, optional
-            Validation predictions
-        val_actuals : np.ndarray, optional
-            Validation actuals
-
-        Returns
-        -------
-        self : MetaLabelPipeline
-            Fitted pipeline
+        features : pd.DataFrame
+            Features, in time order
+        predictions : np.ndarray
+            Out-of-sample primary model predictions for the same rows
+        actuals : np.ndarray
+            Realized excess returns
         """
-        # Generate meta-labels
-        meta_labels = self._generate_meta_labels(train_predictions, train_actuals)
+        meta_labels = self.generate_meta_labels(predictions, actuals)
+        self.base_rate = float(meta_labels.mean())
 
-        # Prepare meta-features
-        X_meta = self._prepare_meta_features(train_features, train_predictions)
-
-        # Remove NaNs
-        X_meta = X_meta.fillna(0)
-        self.feature_names = list(X_meta.columns)
-
-        # Create datasets
-        train_data = lgb.Dataset(X_meta, label=meta_labels)
-
-        valid_sets = [train_data]
-        valid_names = ["train"]
-
-        if (
-            val_features is not None
-            and val_predictions is not None
-            and val_actuals is not None
-        ):
-            val_meta_labels = self._generate_meta_labels(val_predictions, val_actuals)
-            X_val_meta = self._prepare_meta_features(val_features, val_predictions)
-            X_val_meta = X_val_meta.fillna(0)
-
-            val_data = lgb.Dataset(
-                X_val_meta, label=val_meta_labels, reference=train_data
-            )
-            valid_sets.append(val_data)
-            valid_names.append("val")
-
-        # Train model
-        self.model = lgb.train(
+        X_meta = self._prepare_meta_features(features, predictions)
+        self.model = train_booster(
             self.params,
-            train_data,
-            num_boost_round=self.num_boost_round,
-            valid_sets=valid_sets,
-            valid_names=valid_names,
-            callbacks=[
-                lgb.early_stopping(
-                    stopping_rounds=self.early_stopping_rounds, verbose=False
-                )
-            ],
+            X_meta,
+            meta_labels,
+            self.num_boost_round,
+            self.early_stopping_rounds,
         )
-
-        self.is_fitted = True
         return self
 
     def predict_proba(
@@ -194,66 +130,21 @@ class MetaLabelPipeline:
         features: pd.DataFrame,
         predictions: np.ndarray,
     ) -> np.ndarray:
-        """
-        Predict meta-probabilities.
-
-        Parameters
-        ----------
-        features : pd.DataFrame
-            Features
-        predictions : np.ndarray
-            Primary model predictions
-
-        Returns
-        -------
-        meta_proba : np.ndarray
-            Probability that primary prediction is correct
-        """
-        if not self.is_fitted:
-            raise ValueError("Model must be fitted before prediction")
-
-        # Prepare meta-features
+        """Probability that the primary prediction has the right sign."""
         X_meta = self._prepare_meta_features(features, predictions)
-        X_meta = X_meta.fillna(0)
+        return self.model.predict(X_meta)
 
-        # Predict probabilities
-        meta_proba = self.model.predict(X_meta)
-
-        return meta_proba
-
-    def scale_positions(
-        self,
-        allocations: np.ndarray,
-        meta_proba: np.ndarray,
-    ) -> np.ndarray:
+    def tilt_multiplier(self, meta_proba: np.ndarray) -> np.ndarray:
         """
-        Scale positions by meta-probability.
+        Scale factor for the tilt: confidence relative to the base rate.
 
-        Parameters
-        ----------
-        allocations : np.ndarray
-            Base allocations from primary model
-        meta_proba : np.ndarray
-            Meta-probabilities (confidence)
-
-        Returns
-        -------
-        scaled_allocations : np.ndarray
-            Allocations scaled by confidence
+        Averages about 1, so the meta-model redistributes tilt size across
+        days instead of shrinking every position.
         """
-        # Only trade if confidence > threshold
-        trade_mask = meta_proba >= self.min_confidence
-
-        # Scale by probability
-        scaled_allocations = allocations * meta_proba * trade_mask
-
-        return scaled_allocations
+        return np.clip(meta_proba / self.base_rate, 0.0, 2.0)
 
     def save(self, filepath: Path):
         """Save fitted pipeline."""
-        if not self.is_fitted:
-            raise ValueError("Cannot save unfitted pipeline")
-
         filepath = Path(filepath)
         filepath.parent.mkdir(parents=True, exist_ok=True)
 

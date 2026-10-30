@@ -1,120 +1,150 @@
-# Daily S&P 500 Allocation with Meta-Labeling
+# Daily S&P 500 Allocation, Validated Against Buy-and-Hold
 
-[![Python](https://img.shields.io/badge/Python-3.12-3776AB)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB)](https://www.python.org/)
 [![LightGBM](https://img.shields.io/badge/Model-LightGBM-green)](https://lightgbm.readthedocs.io/)
 
-My solution for the [Hull Tactical Market Prediction](https://www.kaggle.com/competitions/hull-tactical-market-prediction/) Kaggle competition (2025). Each day the model decides how much capital to put into the S&P 500, from 0% to 200%, to maximize risk-adjusted excess returns.
+My solution for the [Hull Tactical Market Prediction](https://www.kaggle.com/competitions/hull-tactical-market-prediction/) Kaggle competition (2025). Each day the model decides how much capital to put into the S&P 500, from 0% to 200%. The project is as much about measuring the result honestly as about the model: 63 configurations were compared on walk-forward folds, the best was chosen by a rule fixed in advance, and the last two years of data were held out and scored once.
 
-**Result:** a mean annualized Sharpe ratio of **1.49** across 5 purged, time-ordered validation folds (range 0.99 to 1.88). For comparison, buy-and-hold over recent 800-day windows has a Sharpe ratio of about 0.54 to 0.82, so the strategy is roughly 2x buy-and-hold over comparable periods. See [Results](#results) for the caveats.
+**Result:** on the last 500 trading days, never used during development, the strategy had a Sharpe ratio of **1.94** against **1.15** for buy-and-hold. Over all 4,230 out-of-sample days it was **1.17** against **0.88**. The edge is consistent but not statistically conclusive: the 95% interval for the Sharpe difference is -0.03 to +0.63 over all out-of-sample days, and after deflating for the 63 configurations tried, the probability that it beats buy-and-hold is 0.46 on the development folds.
+
+![Sharpe ratio per evaluation window](results/figures/sharpe_by_fold.png)
+
+## Results
+
+| Window | Days | Sharpe | Buy-and-hold | Competition score | Buy-and-hold | Max drawdown | Buy-and-hold |
+|---|---|---|---|---|---|---|---|
+| Fold 1 | 746 | 0.74 | 0.89 | 0.47 | 0.78 | 14.0% | 17.4% |
+| Fold 2 | 746 | 1.59 | 1.44 | 1.01 | 1.38 | 15.3% | 9.7% |
+| Fold 3 | 746 | 0.99 | 0.99 | 0.54 | 0.92 | 24.3% | 12.9% |
+| Fold 4 | 746 | 1.18 | 0.80 | 1.08 | 0.70 | 20.8% | 23.9% |
+| Fold 5 | 746 | 0.96 | 0.44 | 0.53 | 0.35 | 30.5% | 24.9% |
+| **Development (pooled)** | 3,730 | **1.07** | 0.84 | | | 30.5% | 24.9% |
+| **Lockbox** | 500 | **1.94** | 1.15 | **1.37** | 1.08 | 19.5% | 18.6% |
+
+Sharpe ratios are annualized, on excess returns over the risk-free rate. The competition score is my reimplementation of the competition metric (Sharpe ratio divided by penalties for volatility above 1.2x the market and for underperforming it).
+
+![Growth of $1](results/figures/growth.png)
+
+What the numbers do and don't say:
+
+- **Not significant.** The 95% block-bootstrap interval for the Sharpe difference against buy-and-hold is -0.12 to +0.59 on the development folds, -0.06 to +1.59 on the lockbox and -0.03 to +0.63 over both. The Deflated Sharpe Ratio against buy-and-hold is 0.46 on the development folds (63 configurations).
+- **Higher risk.** The strategy averages 123% invested on the development folds and mostly takes all-in or all-out positions. Annualized volatility is 22% against 16% for buy-and-hold, and its worst drawdown is deeper (30.5% against 24.9%).
+- **The competition metric penalizes that risk.** On folds 1 to 3 the strategy's competition score is below buy-and-hold's even where its Sharpe ratio is equal or higher. It is above buy-and-hold on folds 4, 5 and the lockbox.
+- **Transaction costs** are not in the headline numbers. The allocation changes by 0.3 (development) to 0.5 (lockbox) of capital per day on average. At 5 basis points per unit traded, the Sharpe ratio falls from 1.07 to 0.89 (development) and from 1.94 to 1.65 (lockbox).
+- **Directional accuracy** is 51.2% on the development folds and 56.8% on the lockbox.
+
+## What was tried
+
+![All configurations](results/figures/experiments.png)
+
+Every configuration is logged in [`results/experiments.csv`](results/experiments.csv). Pooled Sharpe ratio on the development folds (buy-and-hold: 0.84):
+
+| Return model | LightGBM volatility | EWMA | GARCH | GJR-GARCH | EGARCH |
+|---|---|---|---|---|---|
+| None (volatility timing only) | 0.79 | 0.83 | 0.82 | 0.82 | 0.80 |
+| LightGBM, default | 0.62 | 0.62 | 0.59 | 0.61 | 0.60 |
+| LightGBM, strongly regularized | 0.90 | 0.89 | 0.90 | 0.90 | 0.89 |
+| Ridge | 0.73 | 0.83 | 0.83 | 0.81 | 0.80 |
+| LightGBM + ridge | 0.69 | 0.82 | 0.79 | 0.83 | 0.82 |
+| **LightGBM, nested Optuna tuning** | **1.07** | | | | |
+
+Plus a single tilt size for all volatility regimes (25 configurations), meta-labeling (10) and FLAML AutoML (2, best 0.86). Findings:
+
+- **The default LightGBM loses to buy-and-hold.** Only heavier regularization or tuning gets ahead of it.
+- **Volatility timing alone does not beat buy-and-hold.** Scaling exposure by forecast volatility, with no return view, scored 0.78 to 0.83 across the 10 variants.
+- **GARCH-family models forecast volatility better** than the LightGBM volatility model (lower QLIKE: about -8.42 against -8.23), but that did not translate into a higher Sharpe ratio.
+- **Meta-labeling did not help.** Trained on out-of-fold predictions, the classifier's probabilities stayed between about 0.48 and 0.57, too close to the base rate to resize positions meaningfully.
 
 ## How it works
 
 ```mermaid
 flowchart TD
-    F["Features<br/>2,000+ engineered → 150 selected"] --> R["Return model (LightGBM)"]
-    R -.-> MU(["predicted excess return μ"])
-    R --> V["Volatility model (LightGBM)<br/>on log squared residuals"]
-    V -.-> SIG(["predicted volatility σ"])
-    V --> M["Meta-labeling classifier (LightGBM)"]
-    M -.-> P(["P(return model has the right sign)"])
-    M --> K["Regime-dependent fractional Kelly<br/>allocation = k_regime · tanh(μ / (σ² · s)) · P(correct)"]
-    K --> C["Clip to [0, 2]"]
+    F["Features<br/>2,000+ engineered → 150 selected"] --> R["Return model μ<br/>LightGBM, tuned per training window"]
+    F --> V["Volatility model σ<br/>LightGBM on log squared residuals"]
+    R --> O["Out-of-fold μ, σ<br/>inside the training window"]
+    V --> O
+    O --> S["Fit sizing: tilt size per regime k, scale s"]
+    S --> A["allocation = clip(1 + k · tanh(μ / (σ² · s)), 0, 2)"]
 ```
 
-1. **Return model.** LightGBM regression of next-day excess return.
-2. **Volatility model.** LightGBM regression of the log squared residuals of the return model, then bias-corrected, clipped to the 10th to 90th percentile of training and EWMA-smoothed.
-3. **Meta-labeling.** A LightGBM classifier predicts whether the return model's sign is correct, and the position is scaled by that probability.
-4. **Allocation.** Fractional Kelly sizing with a tanh soft cap, and a Kelly fraction that depends on the volatility regime:
+1. **Return model.** LightGBM regression of the next day's excess return. Its hyperparameters are tuned per training window with Optuna (50 trials), scoring each trial on out-of-fold predictions inside that window.
+2. **Volatility model.** LightGBM regression of the log squared residuals of the return model, rescaled to the mean squared residual (the log transform biases it low), clipped and EWMA-smoothed.
+3. **Allocation.** Fractional Kelly (μ / σ²) bounded with tanh around a neutral 100% position, with a tilt size per volatility regime (terciles of trailing 21-day volatility). Tilt sizes and scale are fitted on out-of-fold predictions from the training window. A tilt of 0 is buy-and-hold, so the fit can always fall back to it.
 
-   | Volatility regime | Percentile of predicted volatility | Kelly fraction k |
-   |---|---|---|
-   | Low | below 33rd | 0.99 |
-   | Medium | 33rd to 66th | 0.71 |
-   | High | above 66th | 0.50 |
+More detail in [`DOCUMENTATION.md`](DOCUMENTATION.md).
 
 ## Validation
 
-Financial time series leak easily, so validation was the part I was most careful with:
+- **Lockbox.** The last 500 trading days were excluded from all development and scored once with the configuration chosen beforehand. The script refuses to score them twice.
+- **Walk-forward folds.** 5 expanding windows over the remaining data, each scoring the next ~746 days. The training row whose label overlaps the scored window is purged.
+- **Nothing tuned on scored days.** Early stopping uses the end of each training window; tuning, sizing and meta-labeling use out-of-fold predictions inside it.
+- **Contiguous history.** Rolling features on scored days are computed with the real preceding data, not restarted at the window boundary.
+- **Selection rule fixed in advance:** the highest pooled Sharpe ratio on the development folds.
+- **Deflated Sharpe Ratio** (Bailey and López de Prado) over every configuration in the ledger, against zero and against buy-and-hold, and a block bootstrap of the Sharpe difference.
 
-- **Expanding-window, purged K-fold CV** (5 folds, first fold trains on 30% of the data). Samples whose labels overlap the validation window are purged.
-- **Embargo** of 1% of validation samples after each fold to limit serial-correlation leakage.
-- **Fold-local preprocessing.** Medians for imputation, MAD-based winsorization bounds and feature selection are all fit on the training part of each fold only.
-- **Feature selection.** Rolling statistics, momentum, lags, several volatility estimators and regime interactions produce 2,000+ candidates. Correlation clustering with PCA per cluster (85% variance) removes redundancy, and the top 150 by LightGBM importance are kept.
+### Leaks found along the way
 
-## Results
+A review of the pipeline found four leaks, all fixed in this version:
 
-From [`evaluation_results.csv`](evaluation_results.csv) (800 trading days per fold):
+- The allocator's volatility regime was computed from a rolling window that included the day being traded, with thresholds taken from the whole scored window.
+- Early stopping and hyperparameter tuning used the scored fold.
+- The meta-labeling classifier was trained on in-sample predictions, where the return model looks far more accurate than it is.
+- Rolling features restarted at the start of each scored window, so its first ~100 days had incomplete features.
 
-| Fold | Sharpe (base) | Sharpe (with meta-labeling) | Directional accuracy |
-|---|---|---|---|
-| 1 | 1.32 | 1.32 | 49.0% |
-| 2 | 1.81 | 1.81 | 52.9% |
-| 3 | 1.88 | 1.85 | 52.9% |
-| 4 | 0.99 | 0.99 | 53.3% |
-| 5 | 1.47 | 1.43 | 53.5% |
-| **Mean** | **1.49** | **1.48** | **51.7%** |
-
-What the numbers do and don't say:
-
-- These are plain annualized Sharpe ratios from my evaluation script, not the competition's penalty-adjusted score, and they come from validation folds, not a live leaderboard.
-- Transaction costs are not modeled.
-- The competition obfuscates dates, so the buy-and-hold comparison uses comparable recent windows of the S&P 500 (2009 to 2025, excess return over T-bills) rather than the exact fold dates. It is an approximate comparison.
-- **Meta-labeling did not help.** It changed the Sharpe ratio by less than 1% on average (between -2.8% and +0.7% per fold). It shrinks positions by about 40%, which lowers volatility and mean return about equally. I kept it in the pipeline because it is cheap to disable (`--no-meta`), but the edge comes from the return and volatility models and the sizing rule.
-- Directional accuracy is only slightly above 50%. Most of the edge comes from sizing positions by predicted return and volatility, not from calling direction.
+It also found that the volatility model predicted σ about 2x too low (the log-variance bias above).
 
 ## Quick start
 
 ```bash
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
 The competition rules don't allow redistributing the data. Download `train.csv` from the [competition data page](https://www.kaggle.com/competitions/hull-tactical-market-prediction/data) and place it in `data/`.
 
 ```bash
-python train.py --stage all          # preprocess, build CV folds, train all models
-python evaluate.py                   # writes evaluation_results.csv
-python evaluate.py --no-meta         # same, without meta-labeling
+python experiments.py              # all configurations on the development folds (~30 min)
+python tune.py --vol-model lgbm    # nested tuning (~6 min)
+python experiments.py --summary    # ledger, best configuration, Deflated Sharpe Ratio
+python evaluate.py                 # final configuration, per fold vs buy-and-hold
+python train.py                    # fit the final configuration on all data
+python plots.py                    # figures
 ```
 
-Other options:
-
-```bash
-python train.py --stage returns --folds 1,2   # one stage, selected folds
-python train.py --stage all --force           # ignore cached folds and models
-python tune.py --stage returns --n-trials 100 # Optuna tuning (all | returns | volatility | meta)
-python evaluate.py --fold 3                   # single fold
-```
-
-Stages depend on each other: volatility uses the return model's residuals, and meta-labeling uses its predictions. After retraining the return model, retrain the other two.
+See [`QUICKSTART.md`](QUICKSTART.md) for subsets and the lockbox command.
 
 ## Project structure
 
 ```
 .
-├── train.py              # training orchestration (--stage, --folds, --force)
-├── evaluate.py           # per-fold Sharpe and directional accuracy
-├── tune.py               # Optuna hyperparameter search
+├── experiments.py        # configuration groups, ledger, DSR summary, lockbox
+├── tune.py               # nested Optuna tuning
+├── evaluate.py           # final configuration vs buy-and-hold per fold
+├── train.py              # fit on all data, save to models/
+├── plots.py              # figures
 ├── evaluation_results.csv
+├── results/              # ledger, lockbox score, figures
 ├── src/
-│   ├── config.py         # all constants: CV, features, model and allocation parameters
-│   ├── preprocessing.py  # cleaning, winsorization, purged CV folds
+│   ├── config.py         # all constants, FINAL_CONFIG
+│   ├── preprocessing.py  # cleaning, winsorization, folds and lockbox
 │   ├── features.py       # feature engineering and selection
-│   ├── returns.py        # return model
-│   ├── volatility.py     # volatility model
+│   ├── pipeline.py       # one configuration on one fold
+│   ├── returns.py        # return models
+│   ├── volatility.py     # LightGBM, EWMA and GARCH-family volatility
+│   ├── allocation.py     # regime-dependent Kelly sizing
 │   ├── meta_labeling.py  # meta-labeling classifier
-│   └── allocation.py     # regime-dependent Kelly sizing
+│   ├── tuning.py         # nested Optuna search
+│   ├── boosting.py       # LightGBM with early stopping inside the training window
+│   └── metrics.py        # Sharpe, competition score, DSR, bootstrap
 ├── notebooks/eda.ipynb   # exploratory analysis
 ├── data/                 # train.csv goes here (not included)
-└── models/               # trained models per fold (generated)
+└── models/               # final fitted model (generated)
 ```
-
-More detail in [`DOCUMENTATION.md`](DOCUMENTATION.md) and [`QUICKSTART.md`](QUICKSTART.md).
 
 ## References
 
-The validation and meta-labeling approach follows Marcos López de Prado, *Advances in Financial Machine Learning* (Wiley, 2018).
+- Marcos López de Prado, *Advances in Financial Machine Learning* (Wiley, 2018): purged cross-validation, meta-labeling.
+- David H. Bailey and Marcos López de Prado, "The Deflated Sharpe Ratio" (*Journal of Portfolio Management*, 2014).
 
 ## Author
 

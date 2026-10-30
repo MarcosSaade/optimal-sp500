@@ -7,14 +7,12 @@ All operations are leak-safe (no future information used).
 
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Optional
+from typing import List, Dict
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import PolynomialFeatures
 import lightgbm as lgb
 import warnings
 import pickle
 from pathlib import Path
-from scipy.special import comb
 
 from .config import *
 
@@ -30,7 +28,7 @@ class FeatureEngineer:
     2. Add fractional differencing features
     3. Select top-k features by LGBM importance
     4. Add polynomial/interaction features on top-k
-    5. Select final top 150 features by LGBM importance
+    5. Select final top MAX_FEATURES features by LGBM importance
     """
 
     def __init__(
@@ -44,7 +42,7 @@ class FeatureEngineer:
         frac_diff_d_values: List[float] = None,
         frac_diff_threshold: float = FRAC_DIFF_THRESHOLD,
         top_k_after_frac_diff: int = TOP_K_AFTER_FRAC_DIFF,
-        poly_degree: int = POLY_DEGREE,
+        verbose: bool = True,
     ):
         """
         Initialize feature engineer.
@@ -69,19 +67,18 @@ class FeatureEngineer:
             Minimum weight threshold for fractional differencing
         top_k_after_frac_diff : int
             Number of top features to select after fractional differencing
-        poly_degree : int
-            Polynomial degree for interactions
+        verbose : bool
+            Print progress
         """
-        self.continuous_features = continuous_features
+        self.verbose = verbose
         # Safety: ensure target-like columns aren't used as inputs (prevent leakage)
-        forbidden = {TARGET_COL, "forward_returns"}
-        removed = [c for c in self.continuous_features if c in forbidden]
+        removed = [c for c in continuous_features if c in SPECIAL_COLS]
         if removed:
-            print(
+            self._log(
                 f"⚠️  Removed forbidden features from continuous_features to avoid leakage: {removed}"
             )
         self.continuous_features = [
-            c for c in self.continuous_features if c not in forbidden
+            c for c in continuous_features if c not in SPECIAL_COLS
         ]
         self.temporal_windows = temporal_windows
         self.extended_windows = extended_windows
@@ -91,25 +88,28 @@ class FeatureEngineer:
         self.frac_diff_d_values = (
             frac_diff_d_values
             if frac_diff_d_values is not None
-            else [0.2, 0.3, 0.4, 0.5]
+            else FRAC_DIFF_D_VALUES
         )
         self.frac_diff_threshold = frac_diff_threshold
         self.top_k_after_frac_diff = top_k_after_frac_diff
-        self.poly_degree = poly_degree
 
         # Fitted components
         self.feature_clusters: Dict[int, List[str]] = {}
         self.pca_models: Dict[int, PCA] = {}
+        self.pca_medians: Dict[str, float] = {}  # Training medians for PCA inputs
         self.vol_regime_thresholds = {}
         self.frac_diff_weights = {}
         self.top_k_features_after_fd = []
         self.poly_feature_names = []
         self.final_selected_features = []  # Final top 150 features
-        self.fd_selected_features = {}  # Track which fd value was selected for each feature
         self.fd_features_to_drop = []  # Features to drop due to high correlation (determined during fit)
         self.is_fitted = False
 
         np.random.seed(random_seed)
+
+    def _log(self, message: str):
+        if self.verbose:
+            print(message)
 
     def fit(self, df: pd.DataFrame) -> "FeatureEngineer":
         """
@@ -125,7 +125,7 @@ class FeatureEngineer:
         self : FeatureEngineer
             Fitted feature engineer
         """
-        print("🔧 Fitting feature engineer...")
+        self._log("🔧 Fitting feature engineer...")
 
         # Calculate volatility regime thresholds from training data
         self._fit_volatility_regimes(df)
@@ -137,48 +137,48 @@ class FeatureEngineer:
         self._fit_fractional_differencing()
 
         # Phase 1: Create base features (temporal, volatility, regime, PCA)
-        print("⏱  Creating base features...")
+        self._log("⏱  Creating base features...")
         df_base = self._add_base_features(df)
 
         # Phase 2: Add fractional differencing features
-        print("📈 Adding fractional differencing features...")
+        self._log("📈 Adding fractional differencing features...")
         df_with_fd = self._add_fractional_diff_features(df_base)
 
         # Phase 3: Select top-k features using LGBM
-        print(
+        self._log(
             f"🔍 Selecting top {self.top_k_after_frac_diff} features after fractional differencing..."
         )
         self.top_k_features_after_fd = self._select_top_k_features(
             df_with_fd, self.top_k_after_frac_diff
         )
-        print(f"   Selected {len(self.top_k_features_after_fd)} features")
+        self._log(f"   Selected {len(self.top_k_features_after_fd)} features")
 
         # Track which fd values were selected
         self._track_fd_selection()
 
         # Phase 4: Determine polynomial feature names
-        print("🔗 Preparing polynomial/interaction features...")
+        self._log("🔗 Preparing polynomial/interaction features...")
         self._fit_polynomial_features()
 
         # Phase 5: Keep only top-k features before adding polynomials
         df_top_k = self._keep_top_k_features(df_with_fd)
 
         # Phase 6: Create full feature set with polynomials on top-k
-        print("🏗  Creating full feature set with polynomials...")
+        self._log("🏗  Creating full feature set with polynomials...")
         df_with_poly = self._add_polynomial_features(df_top_k)
 
         # Phase 7: Select final top 150 features
-        print(f"🎯 Selecting final top {MAX_FEATURES} features...")
+        self._log(f"🎯 Selecting final top {MAX_FEATURES} features...")
         self.final_selected_features = self._select_top_k_features(
             df_with_poly, MAX_FEATURES
         )
-        print(f"   Selected {len(self.final_selected_features)} final features")
+        self._log(f"   Selected {len(self.final_selected_features)} final features")
 
         # Track final fd selection
         self._track_final_fd_selection()
 
         self.is_fitted = True
-        print("✅ Feature engineer fitted")
+        self._log("✅ Feature engineer fitted")
         return self
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -199,26 +199,26 @@ class FeatureEngineer:
             raise ValueError("FeatureEngineer must be fitted before transform")
 
         # Phase 1: Base features
-        print("⏱  Phase 1: Base features...")
+        self._log("⏱  Phase 1: Base features...")
         df_out = self._add_base_features(df)
 
         # Phase 2: Fractional differencing
-        print("� Phase 2: Fractional differencing...")
+        self._log("📈 Phase 2: Fractional differencing...")
         df_out = self._add_fractional_diff_features(df_out)
 
         # Phase 3: Keep only top-k features + special columns
-        print(f"🔍 Phase 3: Selecting top {self.top_k_after_frac_diff} features...")
+        self._log(f"🔍 Phase 3: Selecting top {self.top_k_after_frac_diff} features...")
         df_out = self._keep_top_k_features(df_out)
 
         # Phase 4: Add polynomial/interaction features
-        print("🔗 Phase 4: Polynomial/interaction features...")
+        self._log("🔗 Phase 4: Polynomial/interaction features...")
         df_out = self._add_polynomial_features(df_out)
 
         # Phase 5: Select final top features
-        print(f"🎯 Phase 5: Selecting final top {MAX_FEATURES} features...")
+        self._log(f"🎯 Phase 5: Selecting final top {MAX_FEATURES} features...")
         df_out = self._keep_final_features(df_out)
 
-        print(f"✅ Feature engineering complete: {df_out.shape[1]} features")
+        self._log(f"✅ Feature engineering complete: {df_out.shape[1]} features")
         return df_out
 
     def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -365,9 +365,9 @@ class FeatureEngineer:
             long_vol = returns.rolling(63).std()
             df_out["vol_trend_21_63"] = short_vol / (long_vol + 1e-8) - 1
 
-            # Maximum drawdown
+            # Distance of the latest return below its 63-day maximum
             rolling_max = returns.shift(1).rolling(63).max()
-            df_out["max_drawdown_63"] = rolling_max - returns
+            df_out["return_below_max_63"] = rolling_max - returns
 
         return df_out
 
@@ -419,6 +419,15 @@ class FeatureEngineer:
 
         return df_out
 
+    def regime(self, df: pd.DataFrame) -> np.ndarray:
+        """
+        Volatility regime per row (0=low, 1=medium, 2=high).
+
+        Uses only returns realized before each row, with tercile thresholds
+        fitted on the training data.
+        """
+        return self._add_regime_features(df)["vol_regime"].values.astype(int)
+
     # ============================================================================
     # Phase 4: PCA Features
     # ============================================================================
@@ -430,8 +439,9 @@ class FeatureEngineer:
         if len(available_features) < 3:
             return
 
-        # Prepare data
-        X = df[available_features].fillna(df[available_features].median())
+        # Prepare data (medians are stored so transform imputes with training values)
+        self.pca_medians = df[available_features].median().fillna(0.0).to_dict()
+        X = df[available_features].fillna(self.pca_medians)
 
         # Compute correlation matrix
         corr_matrix = X.corr()
@@ -460,7 +470,7 @@ class FeatureEngineer:
             if len(features) < 2:
                 continue
 
-            X_cluster = df[features].fillna(df[features].median())
+            X_cluster = df[features].fillna(self.pca_medians)
 
             pca = PCA(
                 n_components=self.pca_variance_threshold, random_state=self.random_seed
@@ -469,8 +479,8 @@ class FeatureEngineer:
 
             self.pca_models[cluster_id] = pca
 
-        print(f"  Found {len(self.feature_clusters)} feature clusters")
-        print(f"  Created {len(self.pca_models)} PCA models")
+        self._log(f"  Found {len(self.feature_clusters)} feature clusters")
+        self._log(f"  Created {len(self.pca_models)} PCA models")
 
     def _add_pca_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add PCA-transformed features."""
@@ -482,7 +492,7 @@ class FeatureEngineer:
             if not all(f in df.columns for f in features):
                 continue
 
-            X_cluster = df[features].fillna(df[features].median())
+            X_cluster = df[features].fillna(self.pca_medians)
             X_pca = pca.transform(X_cluster)
 
             # Add PCA components
@@ -510,16 +520,13 @@ class FeatureEngineer:
                 weights.append(weight)
 
             self.frac_diff_weights[d] = np.array(weights)
-            print(
+            self._log(
                 f"   Fractional diff weights for d={d}: {len(self.frac_diff_weights[d])} terms"
             )
 
     def _add_fractional_diff_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add fractional differencing features with correlation-based selection."""
         df_out = df.copy()
-
-        # Get all numeric columns except special columns
-        special_cols = ["date_id", "risk_free_rate", TARGET_COL, "forward_returns"]
 
         # Apply fractional differencing to selected continuous features
         # Create all fd features for all d values
@@ -589,7 +596,7 @@ class FeatureEngineer:
 
             # Drop highly correlated fd features
             if features_to_drop:
-                print(
+                self._log(
                     f"   Dropping {len(features_to_drop)} fd features due to high correlation (>0.95)"
                 )
                 df_out = df_out.drop(columns=features_to_drop)
@@ -599,7 +606,7 @@ class FeatureEngineer:
                 col for col in self.fd_features_to_drop if col in df_out.columns
             ]
             if features_to_drop:
-                print(
+                self._log(
                     f"   Dropping {len(features_to_drop)} fd features due to high correlation (>0.95)"
                 )
                 df_out = df_out.drop(columns=features_to_drop)
@@ -612,11 +619,11 @@ class FeatureEngineer:
         n = len(series)
         result = np.zeros(n)
 
-        for i in range(len(weights), n):
+        for i in range(len(weights) - 1, n):
             result[i] = np.dot(weights, series[i - len(weights) + 1 : i + 1][::-1])
 
-        # Set early values to NaN
-        result[: len(weights)] = np.nan
+        # Set early values (incomplete window) to NaN
+        result[: len(weights) - 1] = np.nan
 
         return result
 
@@ -637,20 +644,20 @@ class FeatureEngineer:
                     break
 
         # Print statistics
-        print("\n📊 Fractional Differencing Selection Statistics (Top-K):")
-        print("=" * 60)
+        self._log("\n📊 Fractional Differencing Selection Statistics (Top-K):")
+        self._log("=" * 60)
         total_fd_features = sum(fd_counts.values())
         for d in sorted(self.frac_diff_d_values):
             count = fd_counts[d]
             percentage = (
                 (count / total_fd_features * 100) if total_fd_features > 0 else 0
             )
-            print(f"   fd={d}: {count} features ({percentage:.1f}%)")
-        print(f"   Total FD features: {total_fd_features}")
-        print(
+            self._log(f"   fd={d}: {count} features ({percentage:.1f}%)")
+        self._log(f"   Total FD features: {total_fd_features}")
+        self._log(
             f"   Non-FD features: {len(self.top_k_features_after_fd) - total_fd_features}"
         )
-        print("=" * 60 + "\n")
+        self._log("=" * 60 + "\n")
 
     def _track_final_fd_selection(self):
         """Track which fd values were selected in final features and print statistics."""
@@ -665,26 +672,25 @@ class FeatureEngineer:
                     break
 
         # Print statistics
-        print("\n📊 Fractional Differencing Selection Statistics (Final):")
-        print("=" * 60)
+        self._log("\n📊 Fractional Differencing Selection Statistics (Final):")
+        self._log("=" * 60)
         total_fd_features = sum(fd_counts.values())
         for d in sorted(self.frac_diff_d_values):
             count = fd_counts[d]
             percentage = (
                 (count / total_fd_features * 100) if total_fd_features > 0 else 0
             )
-            print(f"   fd={d}: {count} features ({percentage:.1f}%)")
-        print(f"   Total FD features: {total_fd_features}")
-        print(
+            self._log(f"   fd={d}: {count} features ({percentage:.1f}%)")
+        self._log(f"   Total FD features: {total_fd_features}")
+        self._log(
             f"   Non-FD features: {len(self.final_selected_features) - total_fd_features}"
         )
-        print("=" * 60 + "\n")
+        self._log("=" * 60 + "\n")
 
     def _select_top_k_features(self, df: pd.DataFrame, top_k: int) -> List[str]:
         """Select top-k features using LightGBM importance."""
         # Prepare data
-        special_cols = ["date_id", "risk_free_rate", TARGET_COL, "forward_returns"]
-        feature_cols = [col for col in df.columns if col not in special_cols]
+        feature_cols = [col for col in df.columns if col not in SPECIAL_COLS]
 
         # Remove high-NaN features
         nan_ratio = df[feature_cols].isna().mean()
@@ -704,10 +710,9 @@ class FeatureEngineer:
         if len(y) == 0:
             return []
 
-        # Train a simple LightGBM model
-        print(f"   Training LGBM on {len(valid_features)} features...")
-
-        import lightgbm as lgb
+        # Train a simple LightGBM model (fixed rounds: there is no held-out data
+        # here to early-stop on)
+        self._log(f"   Training LGBM on {len(valid_features)} features...")
 
         train_data = lgb.Dataset(X, label=y)
         params = {
@@ -722,13 +727,7 @@ class FeatureEngineer:
             "seed": self.random_seed,
         }
 
-        model = lgb.train(
-            params,
-            train_data,
-            num_boost_round=100,
-            valid_sets=[train_data],
-            callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)],
-        )
+        model = lgb.train(params, train_data, num_boost_round=100)
 
         # Get feature importance
         importance = model.feature_importance(importance_type="gain")
@@ -740,14 +739,13 @@ class FeatureEngineer:
         )
         selected = [f for f, _ in sorted_features[:top_k]]
 
-        print(f"   Top 10 features: {selected[:10]}")
+        self._log(f"   Top 10 features: {selected[:10]}")
 
         return selected
 
     def _keep_top_k_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Keep only top-k features selected during fit."""
-        special_cols = ["date_id", "risk_free_rate", TARGET_COL, "forward_returns"]
-        cols_to_keep = special_cols + self.top_k_features_after_fd
+        cols_to_keep = SPECIAL_COLS + self.top_k_features_after_fd
 
         # Keep only columns that exist
         cols_to_keep = [col for col in cols_to_keep if col in df.columns]
@@ -756,8 +754,7 @@ class FeatureEngineer:
 
     def _keep_final_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Keep only final selected features."""
-        special_cols = ["date_id", "risk_free_rate", TARGET_COL, "forward_returns"]
-        cols_to_keep = special_cols + self.final_selected_features
+        cols_to_keep = SPECIAL_COLS + self.final_selected_features
 
         # Keep only columns that exist
         cols_to_keep = [col for col in cols_to_keep if col in df.columns]
@@ -788,7 +785,7 @@ class FeatureEngineer:
                 feat2 = top_for_interactions[j]
                 self.poly_feature_names.append(f"{feat1}_x_{feat2}")
 
-        print(f"   Will create {len(self.poly_feature_names)} polynomial features")
+        self._log(f"   Will create {len(self.poly_feature_names)} polynomial features")
 
     def _add_polynomial_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add polynomial and interaction features."""
@@ -812,61 +809,3 @@ class FeatureEngineer:
                     df_out[f"{feat1}_x_{feat2}"] = df[feat1] * df[feat2]
 
         return df_out
-
-    # ============================================================================
-    # Phase 5: Interaction Features (OLD - kept for compatibility)
-    # ============================================================================
-
-    def _add_interaction_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add regime interaction features."""
-        df_out = df.copy()
-
-        # Check if we have regime and volatility features
-        if "vol_regime" not in df_out.columns:
-            return df_out
-
-        # Interact key features with regime
-        key_features = []
-
-        # Find historical volatility features
-        for col in df_out.columns:
-            if col.startswith("hist_vol_21"):
-                key_features.append(col)
-                break
-
-        # Create regime-conditional features
-        for feature in key_features:
-            if feature not in df_out.columns:
-                continue
-
-            for regime in [0, 1, 2]:
-                mask = (df_out["vol_regime"] == regime).astype(int)
-                df_out[f"{feature}_regime{regime}"] = df_out[feature] * mask
-
-        return df_out
-
-
-def select_features_by_importance(
-    feature_importances: Dict[str, float],
-    max_features: int = MAX_FEATURES,
-) -> List[str]:
-    """
-    Select top features by importance.
-
-    Parameters
-    ----------
-    feature_importances : Dict[str, float]
-        Mapping of feature name to importance score
-    max_features : int
-        Maximum number of features to select
-
-    Returns
-    -------
-    selected_features : List[str]
-        List of selected feature names
-    """
-    sorted_features = sorted(
-        feature_importances.items(), key=lambda x: x[1], reverse=True
-    )
-
-    return [f for f, _ in sorted_features[:max_features]]

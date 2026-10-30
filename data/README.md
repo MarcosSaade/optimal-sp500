@@ -1,38 +1,20 @@
 # Data Directory
 
-Place your training data file here:
+The competition rules don't allow redistributing the data. Download `train.csv` from the [competition data page](https://www.kaggle.com/competitions/hull-tactical-market-prediction/data) and place it here:
 
 ```
 data/
 └── train.csv
 ```
 
-## Expected Format
+## Format
 
-The `train.csv` file should contain:
-- `date_id`: Monotonically increasing date identifier
-- `risk_free_rate`: Risk-free rate for each period
-- `market_forward_excess_returns`: Target variable (1-day forward excess returns)
-- Feature columns: Various market indicators (E*, I*, M*, P*, S*, V*, D*)
+- `date_id`: trading-day index (dates are hidden by the competition)
+- `forward_returns`: next-day S&P 500 return
+- `risk_free_rate`: risk-free rate for the day
+- `market_forward_excess_returns`: competition target, the forward excess return minus its rolling 5-year mean
+- Feature columns, anonymized by family: `D*` (binary), `E*`, `I*`, `M*`, `P*`, `S*`, `V*`
 
-## Processed Data
+`test.csv` from the competition is 10 rows that also appear in `train.csv`, so it is not needed.
 
-After running preprocessing, this directory will contain:
-
-```
-data/
-├── train.csv              # Your raw data (you provide this)
-└── processed/             # Auto-generated
-    ├── train_fold1.csv
-    ├── val_fold1.csv
-    ├── train_fold2.csv
-    ├── val_fold2.csv
-    ...
-    └── preprocessor_fold*.pkl
-```
-
-## Getting Started
-
-1. Place your `train.csv` file in this directory
-2. Run: `python train.py --stage preprocess`
-3. Processed folds will be created automatically
+Nothing is written to this directory: folds are built in memory, and engineered features are cached in `results/cache/`.

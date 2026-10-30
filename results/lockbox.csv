@@ -1,0 +1,2 @@
+fold,n_days,sharpe,sharpe_buy_hold,score,score_buy_hold,max_drawdown,max_drawdown_buy_hold,mean_allocation,dir_accuracy,vol_qlike,config,date_id_start,date_id_end,sharpe_diff_ci_low,sharpe_diff_ci_high,psr
+lockbox,500,1.9410562878185742,1.1533069819222317,1.3723624362720395,1.0801977154754159,0.19509282029673825,0.18615679134474494,1.5288617898001637,0.568,-8.501607839648743,tuned_lgbm+lgbm,8548,9047,-0.06286855208341861,1.5915093238221747,0.9961094886692372

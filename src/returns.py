@@ -1,24 +1,52 @@
 """
-Return Prediction Model
+Return Prediction Models
 
-LightGBM model for predicting excess returns.
+Predict 1-day forward excess returns. All models share fit(X, y) / predict(X).
+
+- ReturnPredictor: LightGBM (default)
+- RidgeReturnPredictor: standardized ridge regression
+- EnsembleReturnPredictor: average of LightGBM and ridge
+- AutoMLReturnPredictor: FLAML search over model families
+- ConstantReturnPredictor: training mean (no return view; isolates volatility timing)
 """
 
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
 from pathlib import Path
-from typing import Tuple, Dict
+from typing import Dict
 import pickle
 
+from sklearn.linear_model import RidgeCV
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+from .boosting import train_booster
 from .config import *
 
 
-class ReturnPredictor:
+class _Persistable:
+    """save/load via pickle."""
+
+    def save(self, filepath: Path):
+        """Save fitted model."""
+        filepath = Path(filepath)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(filepath, "wb") as f:
+            pickle.dump(self, f)
+
+    @staticmethod
+    def load(filepath: Path):
+        """Load fitted model."""
+        with open(filepath, "rb") as f:
+            return pickle.load(f)
+
+
+class ReturnPredictor(_Persistable):
     """
     Return prediction using LightGBM.
 
-    Predicts 1-day forward excess returns given market features.
+    Early stopping uses the end of the training window (see boosting.py).
     """
 
     def __init__(
@@ -44,132 +72,130 @@ class ReturnPredictor:
         self.early_stopping_rounds = early_stopping_rounds
 
         self.model = None
-        self.feature_names = None
         self.feature_importances = None
-        self.is_fitted = False
 
-    def fit(
-        self,
-        X_train: pd.DataFrame,
-        y_train: pd.Series,
-        X_val: pd.DataFrame = None,
-        y_val: pd.Series = None,
-    ) -> "ReturnPredictor":
-        """
-        Train return prediction model.
-
-        Parameters
-        ----------
-        X_train : pd.DataFrame
-            Training features
-        y_train : pd.Series
-            Training targets (excess returns)
-        X_val : pd.DataFrame, optional
-            Validation features for early stopping
-        y_val : pd.Series, optional
-            Validation targets
-
-        Returns
-        -------
-        self : ReturnPredictor
-            Fitted predictor
-        """
-        # Store feature names
-        self.feature_names = list(X_train.columns)
-
-        # Create datasets
-        train_data = lgb.Dataset(X_train, label=y_train)
-
-        valid_sets = [train_data]
-        valid_names = ["train"]
-
-        if X_val is not None and y_val is not None:
-            val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
-            valid_sets.append(val_data)
-            valid_names.append("val")
-
-        # Train model
-        self.model = lgb.train(
-            self.params,
-            train_data,
-            num_boost_round=self.num_boost_round,
-            valid_sets=valid_sets,
-            valid_names=valid_names,
-            callbacks=[
-                lgb.early_stopping(
-                    stopping_rounds=self.early_stopping_rounds, verbose=False
-                )
-            ],
+    def fit(self, X: pd.DataFrame, y: np.ndarray) -> "ReturnPredictor":
+        """Train on time-ordered features X and excess returns y."""
+        self.model = train_booster(
+            self.params, X, y, self.num_boost_round, self.early_stopping_rounds
         )
-
-        # Store feature importances
         self.feature_importances = dict(
-            zip(
-                self.feature_names,
-                self.model.feature_importance(importance_type="gain"),
+            sorted(
+                zip(X.columns, self.model.feature_importance(importance_type="gain")),
+                key=lambda x: x[1],
+                reverse=True,
             )
         )
-
-        self.is_fitted = True
         return self
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """
-        Predict excess returns.
-
-        Parameters
-        ----------
-        X : pd.DataFrame
-            Features
-
-        Returns
-        -------
-        predictions : np.ndarray
-            Predicted excess returns
-        """
-        if not self.is_fitted:
-            raise ValueError("Model must be fitted before prediction")
-
+        """Predict excess returns."""
         return self.model.predict(X)
 
-    def get_feature_importance(self, top_n: int = None) -> Dict[str, float]:
-        """
-        Get feature importances.
 
-        Parameters
-        ----------
-        top_n : int, optional
-            Return only top N features
+class RegularizedReturnPredictor(ReturnPredictor):
+    """LightGBM with small trees, strong shrinkage and large leaves."""
 
-        Returns
-        -------
-        importances : Dict[str, float]
-            Feature importances (sorted if top_n specified)
-        """
-        if not self.is_fitted:
-            raise ValueError("Model must be fitted first")
-
-        if top_n is None:
-            return self.feature_importances
-
-        sorted_features = sorted(
-            self.feature_importances.items(), key=lambda x: x[1], reverse=True
+    def __init__(self):
+        params = LGBM_RETURN_PARAMS.copy()
+        params.update(
+            {
+                "num_leaves": 7,
+                "max_depth": 3,
+                "learning_rate": 0.02,
+                "min_data_in_leaf": 200,
+                "lambda_l2": 10.0,
+                "feature_fraction": 0.5,
+            }
         )
-        return dict(sorted_features[:top_n])
+        super().__init__(params=params)
 
-    def save(self, filepath: Path):
-        """Save fitted model."""
-        if not self.is_fitted:
-            raise ValueError("Cannot save unfitted model")
 
-        filepath = Path(filepath)
-        filepath.parent.mkdir(parents=True, exist_ok=True)
+class RidgeReturnPredictor(_Persistable):
+    """Ridge regression on standardized features, penalty chosen by CV."""
 
-        with open(filepath, "wb") as f:
-            pickle.dump(self, f)
+    def __init__(self, alphas: np.ndarray = None):
+        self.alphas = alphas if alphas is not None else np.logspace(0, 6, 25)
+        self.model = None
 
-    @staticmethod
-    def load(filepath: Path) -> "ReturnPredictor":
-        """Load fitted model."""
-        with open(filepath, "rb") as f:
-            return pickle.load(f)
+    def fit(self, X: pd.DataFrame, y: np.ndarray) -> "RidgeReturnPredictor":
+        self.model = make_pipeline(StandardScaler(), RidgeCV(alphas=self.alphas))
+        self.model.fit(X, y)
+        return self
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        return self.model.predict(X)
+
+
+class EnsembleReturnPredictor(_Persistable):
+    """Equal-weight average of LightGBM and ridge predictions."""
+
+    def __init__(self):
+        self.members = [ReturnPredictor(), RidgeReturnPredictor()]
+
+    def fit(self, X: pd.DataFrame, y: np.ndarray) -> "EnsembleReturnPredictor":
+        for member in self.members:
+            member.fit(X, y)
+        return self
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        return np.mean([member.predict(X) for member in self.members], axis=0)
+
+
+class AutoMLReturnPredictor(_Persistable):
+    """
+    FLAML AutoML regression.
+
+    Searches LightGBM, XGBoost, random forest, extra trees and linear models,
+    validating on the last INNER_VAL_PCT of the training window.
+    """
+
+    def __init__(self, time_budget: int = 30):
+        self.time_budget = time_budget
+        self.model = None
+
+    def fit(self, X: pd.DataFrame, y: np.ndarray) -> "AutoMLReturnPredictor":
+        from flaml import AutoML
+
+        self.model = AutoML()
+        self.model.fit(
+            X_train=X,
+            y_train=np.asarray(y),
+            task="regression",
+            metric="mse",
+            time_budget=self.time_budget,
+            eval_method="holdout",
+            split_type="time",
+            split_ratio=INNER_VAL_PCT,
+            estimator_list=["lgbm", "xgboost", "rf", "extra_tree", "enet"],
+            seed=RANDOM_SEED,
+            verbose=0,
+        )
+        return self
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        return self.model.predict(X)
+
+
+class ConstantReturnPredictor(_Persistable):
+    """Predict the training mean every day: no view on returns."""
+
+    def __init__(self):
+        self.mean = None
+
+    def fit(self, X: pd.DataFrame, y: np.ndarray) -> "ConstantReturnPredictor":
+        self.mean = float(np.mean(y))
+        return self
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        return np.full(len(X), self.mean)
+
+
+RETURN_MODELS = {
+    "lgbm": ReturnPredictor,
+    "lgbm_reg": RegularizedReturnPredictor,
+    "ridge": RidgeReturnPredictor,
+    "ensemble": EnsembleReturnPredictor,
+    "automl": AutoMLReturnPredictor,
+    "constant": ConstantReturnPredictor,
+}
