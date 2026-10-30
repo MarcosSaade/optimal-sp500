@@ -9,23 +9,16 @@ My solution for the [Hull Tactical Market Prediction](https://www.kaggle.com/com
 
 ## How it works
 
-```
-features (2,000+ engineered -> 150 selected)
-        |
-        v
-return model (LightGBM) ---> predicted excess return  mu
-        |
-        v
-volatility model (LightGBM, on log squared residuals) ---> predicted volatility  sigma
-        |
-        v
-meta-labeling classifier (LightGBM) ---> P(return model has the right sign)
-        |
-        v
-regime-dependent fractional Kelly:  allocation = k_regime * tanh(mu / (sigma^2 * s)) * P(correct)
-        |
-        v
-clip to [0, 2]
+```mermaid
+flowchart TD
+    F["Features<br/>2,000+ engineered → 150 selected"] --> R["Return model (LightGBM)"]
+    R -.-> MU(["predicted excess return μ"])
+    R --> V["Volatility model (LightGBM)<br/>on log squared residuals"]
+    V -.-> SIG(["predicted volatility σ"])
+    V --> M["Meta-labeling classifier (LightGBM)"]
+    M -.-> P(["P(return model has the right sign)"])
+    M --> K["Regime-dependent fractional Kelly<br/>allocation = k_regime · tanh(μ / (σ² · s)) · P(correct)"]
+    K --> C["Clip to [0, 2]"]
 ```
 
 1. **Return model.** LightGBM regression of next-day excess return.

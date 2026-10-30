@@ -8,22 +8,15 @@ This project implements a machine learning pipeline for predicting S&P 500 exces
 
 ### Pipeline Flow
 
-```
-Raw Data
-    ↓
-[1] Preprocessing & Purged CV
-    ↓
-[2] Feature Engineering (2000+ features → 150 selected)
-    ↓
-[3] Return Prediction (LightGBM)
-    ↓
-[4] Volatility Prediction (LightGBM)
-    ↓
-[5] Meta-Labeling (Confidence Scoring)
-    ↓
-[6] Position Allocation (Regime-Dependent Kelly)
-    ↓
-Strategy Returns
+```mermaid
+flowchart TD
+    A[Raw data] --> B["1. Preprocessing and purged CV"]
+    B --> C["2. Feature engineering<br/>2,000+ features → 150 selected"]
+    C --> D["3. Return prediction (LightGBM)"]
+    D --> E["4. Volatility prediction (LightGBM)"]
+    E --> F["5. Meta-labeling (confidence scoring)"]
+    F --> G["6. Position allocation<br/>(regime-dependent Kelly)"]
+    G --> H[Strategy returns]
 ```
 
 ### Key Components
