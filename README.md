@@ -1,407 +1,128 @@
-# Hull Tactical Market Prediction
-
-**S&P 500 Excess Return Forecasting with Meta-Labeling**
+# Daily S&P 500 Allocation with Meta-Labeling
 
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB)](https://www.python.org/)
 [![LightGBM](https://img.shields.io/badge/Model-LightGBM-green)](https://lightgbm.readthedocs.io/)
 
-This repository contains code for my participation in a [Kaggle competition]([url](https://www.kaggle.com/competitions/hull-tactical-market-prediction/)):
+My solution for the [Hull Tactical Market Prediction](https://www.kaggle.com/competitions/hull-tactical-market-prediction/) Kaggle competition (2025). Each day the model decides how much capital to put into the S&P 500, from 0% to 200%, to maximize risk-adjusted excess returns.
 
+**Result:** a mean annualized Sharpe ratio of **1.49** across 5 purged, time-ordered validation folds (range 0.99 to 1.88). For comparison, buy-and-hold over recent 800-day windows has a Sharpe ratio of about 0.54 to 0.82, so the strategy is roughly 2x buy-and-hold over comparable periods. See [Results](#results) for the caveats.
 
-## 📊 Overview
+## How it works
 
-This project implements a machine learning pipeline for predicting S&P 500 excess returns using a sophisticated multi-stage approach:
+```
+features (2,000+ engineered -> 150 selected)
+        |
+        v
+return model (LightGBM) ---> predicted excess return  mu
+        |
+        v
+volatility model (LightGBM, on log squared residuals) ---> predicted volatility  sigma
+        |
+        v
+meta-labeling classifier (LightGBM) ---> P(return model has the right sign)
+        |
+        v
+regime-dependent fractional Kelly:  allocation = k_regime * tanh(mu / (sigma^2 * s)) * P(correct)
+        |
+        v
+clip to [0, 2]
+```
 
-1. **Return Prediction**: LightGBM model predicts expected excess returns
-2. **Volatility Prediction**: LightGBM model predicts conditional volatility  
-3. **Meta-Labeling**: Confidence-based position sizing via meta-classifier
-4. **Position Allocation**: Regime-dependent Kelly criterion for optimal sizing
+1. **Return model.** LightGBM regression of next-day excess return.
+2. **Volatility model.** LightGBM regression of the log squared residuals of the return model, then bias-corrected, clipped to the 10th to 90th percentile of training and EWMA-smoothed.
+3. **Meta-labeling.** A LightGBM classifier predicts whether the return model's sign is correct, and the position is scaled by that probability.
+4. **Allocation.** Fractional Kelly sizing with a tanh soft cap, and a Kelly fraction that depends on the volatility regime:
 
-Performance metrics are saved to `evaluation_results.csv` after running the evaluation pipeline.
+   | Volatility regime | Percentile of predicted volatility | Kelly fraction k |
+   |---|---|---|
+   | Low | below 33rd | 0.99 |
+   | Medium | 33rd to 66th | 0.71 |
+   | High | above 66th | 0.50 |
 
----
+## Validation
 
-## 🎯 Key Features
+Financial time series leak easily, so validation was the part I was most careful with:
 
-### Robust Cross-Validation
-- **Purged K-Fold CV**: Prevents label leakage in overlapping time series
-- **Embargo Period**: Accounts for serial correlation
-- Based on established financial machine learning literature
+- **Expanding-window, purged K-fold CV** (5 folds, first fold trains on 30% of the data). Samples whose labels overlap the validation window are purged.
+- **Embargo** of 1% of validation samples after each fold to limit serial-correlation leakage.
+- **Fold-local preprocessing.** Medians for imputation, MAD-based winsorization bounds and feature selection are all fit on the training part of each fold only.
+- **Feature selection.** Rolling statistics, momentum, lags, several volatility estimators and regime interactions produce 2,000+ candidates. Correlation clustering with PCA per cluster (85% variance) removes redundancy, and the top 150 by LightGBM importance are kept.
 
-### Meta-Labeling Framework
-- Separates prediction (primary model) from confidence (meta-model)
-- Scales positions by prediction confidence
-- Demonstrated to improve risk-adjusted returns in empirical evaluations (see evaluation pipeline)
+## Results
 
-### Regime-Dependent Allocation
-- Adapts position sizing to market volatility
-- Conservative in high volatility, aggressive in low volatility
-- Reduces drawdowns while maintaining returns
+From [`evaluation_results.csv`](evaluation_results.csv) (800 trading days per fold):
 
----
+| Fold | Sharpe (base) | Sharpe (with meta-labeling) | Directional accuracy |
+|---|---|---|---|
+| 1 | 1.32 | 1.32 | 49.0% |
+| 2 | 1.81 | 1.81 | 52.9% |
+| 3 | 1.88 | 1.85 | 52.9% |
+| 4 | 0.99 | 0.99 | 53.3% |
+| 5 | 1.47 | 1.43 | 53.5% |
+| **Mean** | **1.49** | **1.48** | **51.7%** |
 
-## 🚀 Quick Start
+What the numbers do and don't say:
 
-### Installation
+- These are plain annualized Sharpe ratios from my evaluation script, not the competition's penalty-adjusted score, and they come from validation folds, not a live leaderboard.
+- Transaction costs are not modeled.
+- The competition obfuscates dates, so the buy-and-hold comparison uses comparable recent windows of the S&P 500 (2009 to 2025, excess return over T-bills) rather than the exact fold dates. It is an approximate comparison.
+- **Meta-labeling did not help.** It changed the Sharpe ratio by less than 1% on average (between -2.8% and +0.7% per fold). It shrinks positions by about 40%, which lowers volatility and mean return about equally. I kept it in the pipeline because it is cheap to disable (`--no-meta`), but the edge comes from the return and volatility models and the sizing rule.
+- Directional accuracy is only slightly above 50%. Most of the edge comes from sizing positions by predicted return and volatility, not from calling direction.
+
+## Quick start
 
 ```bash
-# Create virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Prepare Data
-
-Place your data file in the `data/` directory:
-- `train.csv`: Training data with features and target
-
-Due to the competition's policy, I can't upload the dataset here, but you can get it [here]([url](https://www.kaggle.com/competitions/hull-tactical-market-prediction/data)) 
-
-### Run Pipeline
+The competition rules don't allow redistributing the data. Download `train.csv` from the [competition data page](https://www.kaggle.com/competitions/hull-tactical-market-prediction/data) and place it in `data/`.
 
 ```bash
-# 1. Preprocess data and create CV folds
-python src/train.py --stage preprocess
-
-# 2. Train all models (returns, volatility, meta-labeling)
-python src/train.py --stage all
-
-# 3. Evaluate performance
-python src/evaluate.py
-
-# Or run everything at once:
-python src/train.py --stage all --evaluate
+python train.py --stage all          # preprocess, build CV folds, train all models
+python evaluate.py                   # writes evaluation_results.csv
+python evaluate.py --no-meta         # same, without meta-labeling
 ```
 
-### Train Individual Components
+Other options:
 
 ```bash
-# Train only return model
-python train.py --stage returns
-
-# Train only volatility model
-python train.py --stage volatility
-
-# Train only meta-labeling classifier
-python train.py --stage meta
+python train.py --stage returns --folds 1,2   # one stage, selected folds
+python train.py --stage all --force           # ignore cached folds and models
+python tune.py --stage returns --n-trials 100 # Optuna tuning (all | returns | volatility | meta)
+python evaluate.py --fold 3                   # single fold
 ```
 
-### Hyperparameter Tuning
+Stages depend on each other: volatility uses the return model's residuals, and meta-labeling uses its predictions. After retraining the return model, retrain the other two.
 
-```bash
-# Tune all models with Optuna
-python tune.py --stage all
-
-# Tune specific components
-python tune.py --stage returns --n-trials 100
-python tune.py --stage volatility --n-trials 50
-```
-
----
-
-## 📁 Project Structure
+## Project structure
 
 ```
 .
-├── README.md                 # This file
-├── requirements.txt          # Python dependencies
-├── train.py                 # Training orchestration
-├── tune.py                  # Hyperparameter optimization
-├── evaluate.py              # Model evaluation
-├── data/                     # Data directory
-│   ├── train.csv            # Raw training data (user provided)
-│   └── processed/           # Processed CV folds (auto-generated)
-├── models/                   # Trained models (auto-generated)
-│   ├── returns/             # Return prediction models
-│   ├── volatility/          # Volatility prediction models
-│   ├── meta/                # Meta-labeling classifiers
-│   └── tuning_results/      # Hyperparameter tuning results
-├── notebooks/               # Exploratory analysis
-│   └── eda.ipynb           # Exploratory data analysis
-└── src/                     # Source code
-    ├── config.py           # Configuration and constants
-    ├── preprocessing.py    # Data preprocessing and CV
-    ├── features.py         # Feature engineering
-    ├── returns.py          # Return prediction model
-    ├── volatility.py       # Volatility prediction model
-    ├── meta_labeling.py    # Meta-labeling framework
-    └── allocation.py       # Position allocation
+├── train.py              # training orchestration (--stage, --folds, --force)
+├── evaluate.py           # per-fold Sharpe and directional accuracy
+├── tune.py               # Optuna hyperparameter search
+├── evaluation_results.csv
+├── src/
+│   ├── config.py         # all constants: CV, features, model and allocation parameters
+│   ├── preprocessing.py  # cleaning, winsorization, purged CV folds
+│   ├── features.py       # feature engineering and selection
+│   ├── returns.py        # return model
+│   ├── volatility.py     # volatility model
+│   ├── meta_labeling.py  # meta-labeling classifier
+│   └── allocation.py     # regime-dependent Kelly sizing
+├── notebooks/eda.ipynb   # exploratory analysis
+├── data/                 # train.csv goes here (not included)
+└── models/               # trained models per fold (generated)
 ```
 
----
+More detail in [`DOCUMENTATION.md`](DOCUMENTATION.md) and [`QUICKSTART.md`](QUICKSTART.md).
 
-## 🔬 Methodology
+## References
 
-### 1. Data Preprocessing
+The validation and meta-labeling approach follows Marcos López de Prado, *Advances in Financial Machine Learning* (Wiley, 2018).
 
-**Purged K-Fold Cross-Validation**:
-- 5 expanding window folds
-- Purges samples with overlapping labels
-- 1% embargo period to prevent serial correlation leakage
+## Author
 
-**Preprocessing Steps**:
-- Drop features with >10% missing values
-- Impute remaining missing values with training fold medians
-- Winsorize outliers using Median Absolute Deviation (MAD)
-- Create availability masks for features with late start dates
-
-### 2. Feature Engineering
-
-**Temporal Features**:
-- Rolling statistics (mean, std, min, max) over multiple windows (5, 21, 63 days)
-- Momentum indicators
-- Lag features
-
-**Volatility Features**:
-- Historical volatility (multiple windows)
-- EWMA volatility
-- Volatility-of-volatility
-- Range-based volatility
-
-**Regime Features**:
-- Volatility regime classification (low, medium, high)
-- Regime interaction features
-- Regime transition indicators
-
-**Feature Selection**:
-- Correlation clustering to remove redundant features
-- PCA for dimensionality reduction per cluster
-- Importance-based selection from initial model training
-
-### 3. Return Prediction
-
-**Model**: LightGBM Regressor
-
-**Features**:
-- ~150 engineered features (selected from 2000+ candidates)
-- Volatility regime indicators
-- Technical and statistical features
-
-**Training**:
-- Trained on each CV fold independently
-- Early stopping to prevent overfitting
-- Feature importance analysis for interpretability
-
-### 4. Volatility Prediction
-
-**Model**: LightGBM Regressor
-
-**Target**: Log-variance of residuals from return predictions
-
-**Features**:
-- Historical volatility measures
-- Squared returns (GARCH-like features)
-- Volatility trends and percentiles
-- Recent extreme returns
-
-**Calibration**:
-- Bias correction
-- Clipping to training distribution percentiles
-- EWMA smoothing for stability
-
-### 5. Meta-Labeling
-
-**Concept**: Separate prediction accuracy from position sizing
-
-**Primary Model**: Predicts return direction and magnitude
-
-**Meta-Model**: Predicts whether primary model is correct
-
-**Meta-Labels**: Binary labels indicating if primary prediction has correct sign
-
-**Meta-Classifier**: LightGBM classifier trained on:
-- Market features
-- Primary model predictions
-- Regime indicators
-
-**Position Sizing**: Scale allocations by meta-probability:
-```
-final_allocation = base_allocation × meta_probability
-```
-
-**Benefits**:
-- Reduces positions when model is uncertain
-- Increases positions when model is confident
-- Improves risk-adjusted returns significantly
-
-### 6. Position Allocation
-
-**Method**: Regime-Dependent Kelly Criterion
-
-**Kelly Formula**: 
-```
-allocation = k × tanh(μ / (σ² × s))
-```
-
-Where:
-- μ = predicted return
-- σ = predicted volatility
-- k = Kelly fraction (regime-dependent)
-- s = scaling parameter
-
-**Regime-Specific Parameters**:
-- Low volatility: k = 0.98 (aggressive)
-- Medium volatility: k = 0.71 (moderate)
-- High volatility: k = 0.50 (conservative)
-
-**Constraints**: Allocations clipped to [0, 2] (0% to 200% of capital)
-
----
-
-## 📈 Performance Metrics
-
-All performance metrics are saved to `evaluation_results.csv` after running the evaluation pipeline. The evaluation includes:
-
-- **Sharpe Ratio**: Annualized risk-adjusted returns (primary metric)
-- **Directional Accuracy**: Percentage of correct predictions
-- **Per-Fold Analysis**: Metrics for each cross-validation fold
-- **Meta-Labeling Impact**: Improvement from confidence-based position sizing
-
-Run `python evaluate.py` to generate detailed performance reports.
-
----
-
-## 🛠️ Technical Details
-
-### Dependencies
-
-Core libraries:
-- `numpy`, `pandas`: Data manipulation
-- `scikit-learn`: Machine learning utilities
-- `lightgbm`: Gradient boosting models
-- `matplotlib`, `seaborn`: Visualization
-
-See `requirements.txt` for complete list.
-
-### Model Persistence
-
-Trained models are saved in `models/` directory:
-- Return models: `models/returns/fold_{1-5}.pkl`
-- Volatility models: `models/volatility/fold_{1-5}.pkl`
-- Meta-classifiers: `models/meta/fold_{1-5}.pkl`
-
-### Configuration
-
-All hyperparameters and settings are in `src/config.py`:
-- Feature lists
-- Winsorization thresholds
-- Model hyperparameters
-- CV parameters
-- Allocation parameters
-
----
-
-## 📚 Theoretical Foundation
-
-This implementation is based on established financial machine learning techniques:
-
-- **Purged K-Fold Cross-Validation**: Prevents label leakage in time series with overlapping targets
-- **Meta-Labeling**: Separates prediction from position sizing for improved risk management
-- **Regime-Dependent Allocation**: Adapts position sizing to market volatility conditions
-- **Feature Engineering**: Advanced temporal and volatility features with dimensionality reduction
-
----
-
-## 🔄 Model Retraining
-
-The pipeline handles circular dependencies between models:
-
-**Dependency Chain**:
-1. Return model (no dependencies)
-2. Volatility model (depends on return predictions)
-3. Meta-labeling (depends on return predictions and actual returns)
-
-**Retraining Options**:
-
-```bash
-# Retrain everything (handles dependencies automatically)
-python src/train.py --stage all
-
-# Retrain returns only
-python src/train.py --stage returns
-
-# Retrain volatility (will use existing return predictions)
-python src/train.py --stage volatility
-
-# Retrain meta-labeling (will use existing predictions)
-python src/train.py --stage meta
-```
-
-**Note**: If you retrain the return model, you should also retrain volatility and meta-labeling to maintain consistency.
-
----
-
-
-
-## 📊 Evaluation Metrics
-
-The pipeline evaluates models using multiple metrics:
-
-**Return Prediction**:
-- R² score
-- RMSE
-- Directional accuracy
-
-**Volatility Prediction**:
-- QLIKE (Quasi-Likelihood)
-- Correlation with absolute returns
-- Calibration slope
-
-**Meta-Labeling**:
-- ROC AUC
-- Precision, Recall, F1
-- Lift (return improvement when meta-label = 1)
-
-**Overall Strategy**:
-- Sharpe Ratio (primary metric)
-- Maximum drawdown
-- Win rate
-- Profit factor
-
----
-
-## 💡 Usage Tips
-
-### Memory Optimization
-- The feature engineering creates 2000+ features
-- Feature selection reduces this to ~150 most important
-- Adjust `max_features` in `config.py` to balance performance vs memory
-
-### Hyperparameter Tuning
-- Default parameters are optimized for this dataset
-- Use `tune.py` for systematic hyperparameter search with Optuna
-- Modify `LGBM_PARAMS` in `config.py` for manual experimentation
-
-### Cross-Validation
-- 5 folds balance computation time and robustness
-- Increase `n_splits` in `config.py` for more robust estimates
-- Decrease for faster iteration during development
-
----
-
-## Issues
-
-For questions or issues:
-1. Check the code documentation in each module
-2. Review `DOCUMENTATION.md` for detailed technical information
-3. Examine `notebooks/eda.ipynb` for data insights
-4. See `QUICKSTART.md` for setup instructions
-
----
-
-## ⚖️ License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 👤 Author
-
-**Marcos Saade**
-
----
-
-*Last Updated: October 2025*
+Marcos Saade · [marcossaade.github.io](https://marcossaade.github.io) · [LinkedIn](https://www.linkedin.com/in/marcos-saade/)
