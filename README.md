@@ -5,7 +5,7 @@
 
 My solution for the [Hull Tactical Market Prediction](https://www.kaggle.com/competitions/hull-tactical-market-prediction/) Kaggle competition (2025). Each day the model decides how much capital to put into the S&P 500, from 0% to 200%. The project is as much about measuring the result honestly as about the model: 63 configurations were compared on walk-forward folds, the best was chosen by a rule fixed in advance, and the last two years of data were held out and scored once.
 
-**Result:** on the last 500 trading days, never used during development, the strategy had a Sharpe ratio of **1.94** against **1.15** for buy-and-hold. Over all 4,230 out-of-sample days it was **1.17** against **0.88**. The edge is consistent but not statistically conclusive: the 95% interval for the Sharpe difference is -0.03 to +0.63 over all out-of-sample days, and after deflating for the 63 configurations tried, the probability that it beats buy-and-hold is 0.46 on the development folds.
+**Result:** on the last 500 trading days, never used during development, the strategy had a Sharpe ratio of **1.94** against **1.15** for buy-and-hold. Over all 4,230 out-of-sample days it was **1.17** against **0.88**. The edge is consistent but not statistically conclusive: the 95% interval for the Sharpe difference is -0.03 to +0.63 over all out-of-sample days, and after deflating for the 63 configurations tried, the probability that it beats buy-and-hold is 46% on the development folds.
 
 ![Sharpe ratio per evaluation window](results/figures/sharpe_by_fold.png)
 
@@ -27,7 +27,7 @@ Sharpe ratios are annualized, on excess returns over the risk-free rate. The com
 
 What the numbers do and don't say:
 
-- **Not significant.** The 95% block-bootstrap interval for the Sharpe difference against buy-and-hold is -0.12 to +0.59 on the development folds, -0.06 to +1.59 on the lockbox and -0.03 to +0.63 over both. The Deflated Sharpe Ratio against buy-and-hold is 0.46 on the development folds (63 configurations).
+- **Not significant.** The 95% block-bootstrap interval for the Sharpe difference against buy-and-hold is -0.12 to +0.59 on the development folds, -0.06 to +1.59 on the lockbox and -0.03 to +0.63 over both. The Deflated Sharpe Ratio against buy-and-hold is 0.46 on the development folds (63 configurations): a 46% probability of beating it, where 95% is the usual bar.
 - **Higher risk.** The strategy averages 123% invested on the development folds and mostly takes all-in or all-out positions. Annualized volatility is 22% against 16% for buy-and-hold, and its worst drawdown is deeper (30.5% against 24.9%).
 - **The competition metric penalizes that risk.** On folds 1 to 3 the strategy's competition score is below buy-and-hold's even where its Sharpe ratio is equal or higher. It is above buy-and-hold on folds 4, 5 and the lockbox.
 - **Transaction costs** are not in the headline numbers. The allocation changes by 0.3 (development) to 0.5 (lockbox) of capital per day on average. At 5 basis points per unit traded, the Sharpe ratio falls from 1.07 to 0.89 (development) and from 1.94 to 1.65 (lockbox).
